@@ -161,7 +161,7 @@ class OverviewDialog(QtWidgets.QDialog):
                 continue
             with open(label_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            filename = data["imagePath"]
+            filename = label_dir +'/'+ data["imagePath"]
             shapes = data.get("shapes", [])
             for shape in shapes:
                 if "label" not in shape or "shape_type" not in shape:
