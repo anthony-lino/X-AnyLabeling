@@ -1,6 +1,5 @@
 """This module defines Canvas widget - the core component for drawing image labels"""
 
-import imgviz
 import math
 from copy import deepcopy
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -8,6 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QWheelEvent
 
 from anylabeling.services.auto_labeling.types import AutoLabelingMode
+from anylabeling.views.labeling.utils.colormap import label_colormap
 
 from .. import utils
 from ..shape import Shape
@@ -22,7 +22,7 @@ MOVE_SPEED = 5.0
 LARGE_ROTATION_INCREMENT = 0.1
 SMALL_ROTATION_INCREMENT = 0.01
 
-LABEL_COLORMAP = imgviz.label_colormap()
+LABEL_COLORMAP = label_colormap()
 
 
 class Canvas(
@@ -64,7 +64,6 @@ class Canvas(
         # Initialise local state.
         self.mode = self.EDIT
         self.is_auto_labeling = False
-        self.is_painting = True
         self.auto_labeling_mode: AutoLabelingMode = None
         self.shapes = []
         self.shapes_backups = []
@@ -1004,10 +1003,6 @@ class Canvas(
             super().paintEvent(event)
             return
 
-        # NOTE: Disable drawing when auto labeling for speed up
-        if not self.is_painting:
-            return
-
         p = self._painter
         p.begin(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
@@ -1058,6 +1053,8 @@ class Canvas(
             p.setPen(pen)
             grouped_shapes = {}
             for shape in self.shapes:
+                if not shape.visible:
+                    continue
                 if shape.group_id is None:
                     continue
                 if shape.group_id not in grouped_shapes:
@@ -1127,6 +1124,9 @@ class Canvas(
             linking_pairs = []
             group_color = (255, 128, 0)
             for shape in self.shapes:
+                if not shape.visible:
+                    continue
+
                 try:
                     linking_pairs += shape.kie_linking
                 except Exception:
@@ -1266,6 +1266,8 @@ class Canvas(
             pen = QtGui.QPen(QtGui.QColor(background_color), 8, Qt.SolidLine)
             p.setPen(pen)
             for shape in self.shapes:
+                if not shape.visible:
+                    continue
                 description = shape.description
                 if description:
                     bbox = shape.bounding_rect()
@@ -1286,6 +1288,8 @@ class Canvas(
             pen = QtGui.QPen(QtGui.QColor(text_color), 8, Qt.SolidLine)
             p.setPen(pen)
             for shape in self.shapes:
+                if not shape.visible:
+                    continue
                 description = shape.description
                 if description:
                     bbox = shape.bounding_rect()
@@ -1304,6 +1308,8 @@ class Canvas(
             )
             labels = []
             for shape in self.shapes:
+                if not shape.visible:
+                    continue
                 d_react = shape.point_size / shape.scale
                 d_text = 1.5
                 if not shape.visible:
@@ -1371,11 +1377,15 @@ class Canvas(
             pen = QtGui.QPen(QtGui.QColor("#FFA500"), 8, Qt.SolidLine)
             p.setPen(pen)
             for shape, rect, _, _ in labels:
+                if not shape.visible:
+                    continue
                 p.fillRect(rect, shape.line_color)
 
-            pen = QtGui.QPen(QtGui.QColor("#FFFFFF"), 8, Qt.SolidLine)
+            pen = QtGui.QPen(QtGui.QColor("#000000"), 8, Qt.SolidLine)
             p.setPen(pen)
             for _, _, text_pos, label_text in labels:
+                if not shape.visible:
+                    continue
                 p.drawText(text_pos, label_text)
 
         # Draw mouse coordinates

@@ -14,7 +14,11 @@ from PyQt5.QtCore import QCoreApplication
 from anylabeling.utils import GenericWorker
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.logger import logger
-from anylabeling.views.labeling.utils.opencv import qt_img_to_rgb_cv_img
+from anylabeling.views.labeling.utils.opencv import (
+    get_bounding_boxes,
+    qt_img_to_rgb_cv_img,
+)
+from anylabeling.services.auto_labeling.utils import calculate_rotation_theta
 
 from .lru_cache import LRUCache
 from .model import Model
@@ -276,7 +280,7 @@ class EfficientViT_SAM(Model):
         """Set auto labeling marks"""
         self.marks = marks
 
-    def post_process(self, masks):
+    def post_process(self, masks, image=None):
         """
         Post process masks
         """
@@ -341,44 +345,34 @@ class EfficientViT_SAM(Model):
                 shape.closed = True
                 shape.fill_color = "#000000"
                 shape.line_color = "#000000"
-                shape.line_width = 1
                 shape.label = "AUTOLABEL_OBJECT"
                 shape.selected = False
                 shapes.append(shape)
         elif self.output_mode in ["rectangle", "rotation"]:
-            x_min = 100000000
-            y_min = 100000000
-            x_max = 0
-            y_max = 0
-            for approx in approx_contours:
-                # Scale points
-                points = approx.reshape(-1, 2)
-                points[:, 0] = points[:, 0]
-                points[:, 1] = points[:, 1]
-                points = points.tolist()
-                if len(points) < 3:
-                    continue
-
-                # Get min/max
-                for point in points:
-                    x_min = min(x_min, point[0])
-                    y_min = min(y_min, point[1])
-                    x_max = max(x_max, point[0])
-                    y_max = max(y_max, point[1])
-
-            # Create shape
             shape = Shape(flags={})
-            shape.add_point(QtCore.QPointF(x_min, y_min))
-            shape.add_point(QtCore.QPointF(x_max, y_min))
-            shape.add_point(QtCore.QPointF(x_max, y_max))
-            shape.add_point(QtCore.QPointF(x_min, y_max))
-            shape.shape_type = (
-                "rectangle" if self.output_mode == "rectangle" else "rotation"
+            rectangle_box, rotation_box = get_bounding_boxes(
+                approx_contours[0]
             )
+            xmin, ymin, xmax, ymax = rectangle_box
+            if self.output_mode == "rectangle":
+                shape.add_point(QtCore.QPointF(int(xmin), int(ymin)))
+                shape.add_point(QtCore.QPointF(int(xmax), int(ymin)))
+                shape.add_point(QtCore.QPointF(int(xmax), int(ymax)))
+                shape.add_point(QtCore.QPointF(int(xmin), int(ymax)))
+            else:
+                for point in rotation_box:
+                    shape.add_point(
+                        QtCore.QPointF(int(point[0]), int(point[1]))
+                    )
+                shape.direction = calculate_rotation_theta(rotation_box)
+            shape.shape_type = self.output_mode
             shape.closed = True
             shape.fill_color = "#000000"
             shape.line_color = "#000000"
-            shape.line_width = 1
+            if self.clip_net is not None and self.classes:
+                img = image[ymin:ymax, xmin:xmax]
+                out = self.clip_net(img, self.classes)
+                shape.cache_label = self.classes[int(np.argmax(out))]
             shape.label = "AUTOLABEL_OBJECT"
             shape.selected = False
             shapes.append(shape)
@@ -409,25 +403,22 @@ class EfficientViT_SAM(Model):
         """
         Predict shapes from image
         """
-
         if image is None or not self.marks:
             return AutoLabelingResult([], replace=False)
 
         shapes = []
         try:
-            # Use cached image embedding if possible
             cached_data = self.image_embedding_cache.get(filename)
             if cached_data is not None:
                 image_embedding = cached_data
+                cv_image = qt_img_to_rgb_cv_img(image, filename) 
             else:
                 cv_image = qt_img_to_rgb_cv_img(image, filename)
                 if self.stop_inference:
                     return AutoLabelingResult([], replace=False)
                 image_embedding = self.encoder_model(cv_image)
-                self.image_embedding_cache.put(
-                    filename,
-                    image_embedding,
-                )
+                self.image_embedding_cache.put(filename, image_embedding)
+
             if self.stop_inference:
                 return AutoLabelingResult([], replace=False)
 
@@ -442,15 +433,15 @@ class EfficientViT_SAM(Model):
                 masks = masks[0][0]
             else:
                 masks = masks[0]
-            shapes = self.post_process(masks)
-        except Exception as e:  # noqa
+            shapes = self.post_process(masks, cv_image)
+            
+        except Exception as e:
             logger.warning("Could not inference model")
             logger.warning(e)
             traceback.print_exc()
             return AutoLabelingResult([], replace=False)
 
-        result = AutoLabelingResult(shapes, replace=False)
-        return result
+        return AutoLabelingResult(shapes, replace=False)
 
     def unload(self):
         self.stop_inference = True

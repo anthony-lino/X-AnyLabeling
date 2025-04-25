@@ -5,91 +5,32 @@ import yaml
 import importlib.resources as pkg_resources
 from threading import Lock
 
-
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
+import anylabeling.configs as auto_labeling_configs
 from anylabeling.utils import GenericWorker
 from anylabeling.views.labeling.logger import logger
 from anylabeling.config import get_config, save_config
-from anylabeling.configs import auto_labeling as auto_labeling_configs
 from anylabeling.services.auto_labeling.types import AutoLabelingResult
 from anylabeling.services.auto_labeling.utils import TimeoutContext
+from anylabeling.services.auto_labeling import (
+    _CUSTOM_MODELS,
+    _CACHED_AUTO_LABELING_MODELS,
+    _AUTO_LABELING_MARKS_MODELS,
+    _AUTO_LABELING_API_TOKEN_MODELS,
+    _AUTO_LABELING_RESET_TRACKER_MODELS,
+    _AUTO_LABELING_CONF_MODELS,
+    _AUTO_LABELING_IOU_MODELS,
+    _AUTO_LABELING_PRESERVE_EXISTING_ANNOTATIONS_STATE_MODELS,
+    _AUTO_LABELING_PROMPT_MODELS,
+    _ON_NEXT_FILES_CHANGED_MODELS,
+)
 
 
 class ModelManager(QObject):
     """Model manager"""
 
     MAX_NUM_CUSTOM_MODELS = 5
-    CUSTOM_MODELS = [
-        "florence2",
-        "doclayout_yolo",
-        "open_vision",
-        "segment_anything",
-        "segment_anything_2",
-        "segment_anything_2_video",
-        "sam_med2d",
-        "sam_hq",
-        "yolov5",
-        "yolov6",
-        "yolov7",
-        "yolov8",
-        "yolov8_seg",
-        "yolox",
-        "yolov5_resnet",
-        "yolov6_face",
-        "rtdetr",
-        "yolo_nas",
-        "yolox_dwpose",
-        "clrnet",
-        "ppocr_v4",
-        "yolov5_sam",
-        "efficientvit_sam",
-        "yolov5_track",
-        "damo_yolo",
-        "yolov5_sahi",
-        "yolov8_sahi",
-        "grounding_sam",
-        "grounding_sam2",
-        "grounding_dino",
-        "yolov5_obb",
-        "gold_yolo",
-        "yolov8_efficientvit_sam",
-        "ram",
-        "yolov5_seg",
-        "yolov5_ram",
-        "yolov8_pose",
-        "pulc_attribute",
-        "internimage_cls",
-        "edge_sam",
-        "yolov5_cls",
-        "yolov8_cls",
-        "yolov8_obb",
-        "yolov5_car_plate",
-        "rtmdet_pose",
-        "yolov9",
-        "yolow",
-        "yolov10",
-        "rmbg",
-        "depth_anything",
-        "depth_anything_v2",
-        "yolow_ram",
-        "rtdetrv2",
-        "yolov8_det_track",
-        "yolov8_seg_track",
-        "yolov8_obb_track",
-        "yolov8_pose_track",
-        "yolo11",
-        "yolo11_cls",
-        "yolo11_obb",
-        "yolo11_seg",
-        "yolo11_pose",
-        "yolo11_det_track",
-        "yolo11_seg_track",
-        "yolo11_obb_track",
-        "yolo11_pose_track",
-        "upn",
-    ]
-
     model_configs_changed = pyqtSignal(list)
     new_model_status = pyqtSignal(str)
     model_loaded = pyqtSignal(dict)
@@ -147,11 +88,12 @@ class ModelManager(QObject):
             config_file = model["config_file"]
             if config_file.startswith(":/"):  # Config file is in resources
                 config_file_name = config_file[2:]
-                with pkg_resources.open_text(
-                    auto_labeling_configs, config_file_name
-                ) as f:
+                resource_path = pkg_resources.files(
+                    auto_labeling_configs
+                ).joinpath("auto_labeling", config_file_name)
+                with open(resource_path, "r", encoding="utf-8") as f:
                     model_config = yaml.safe_load(f)
-                    model_config["config_file"] = config_file
+                    model_config["config_file"] = str(config_file)
             else:  # Config file is in local file system
                 with open(config_file, "r", encoding="utf-8") as f:
                     model_config = yaml.safe_load(f)
@@ -211,7 +153,7 @@ class ModelManager(QObject):
             logger.info(
                 "Another model is being loaded. Please wait for it to finish."
             )
-            return
+            return False
 
         # Check config file path
         if not config_file or not os.path.isfile(config_file):
@@ -222,14 +164,15 @@ class ModelManager(QObject):
             self.new_model_status.emit(
                 self.tr("Error in loading custom model: Invalid path.")
             )
-            return
+            return False
 
         # Check config file content
         model_config = {}
-        with open(config_file, "r", encoding="utf-8") as f:
-            model_config = yaml.safe_load(f)
-            model_config["config_file"] = os.path.abspath(config_file)
-        if not model_config:
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                model_config = yaml.safe_load(f)
+                model_config["config_file"] = os.path.abspath(config_file)
+        except Exception as e:
             logger.error(
                 "An error occurred while loading the custom model: "
                 "The config file is invalid."
@@ -237,12 +180,13 @@ class ModelManager(QObject):
             self.new_model_status.emit(
                 self.tr("Error in loading custom model: Invalid config file.")
             )
-            return
+            return False
+
         if (
             "type" not in model_config
             or "display_name" not in model_config
             or "name" not in model_config
-            or model_config["type"] not in self.CUSTOM_MODELS
+            or model_config["type"] not in _CUSTOM_MODELS
         ):
             if "type" not in model_config:
                 logger.error(
@@ -269,7 +213,7 @@ class ModelManager(QObject):
                     "Error in loading custom model: Invalid config file format."
                 )
             )
-            return
+            return False
 
         # Add or replace custom model
         custom_models = get_config().get("custom_models", [])
@@ -301,6 +245,8 @@ class ModelManager(QObject):
 
         # Load model
         self.load_model(model_config["config_file"])
+
+        return True
 
     def load_model(self, config_file):
         """Run model loading in a thread"""
@@ -341,11 +287,13 @@ class ModelManager(QObject):
             return
 
         self.model_download_thread = QThread()
-        self.new_model_status.emit(
-            self.tr("Loading model: {model_name}. Please wait...").format(
-                model_name=self.model_configs[model_id]["display_name"]
-            )
+        template = "Loading model: {model_name}. Please wait..."
+        translated_template = self.tr(template)
+        message = translated_template.format(
+            model_name=self.model_configs[model_id]["display_name"]
         )
+        self.new_model_status.emit(message)
+
         self.model_download_worker = GenericWorker(self._load_model, model_id)
         self.model_download_worker.finished.connect(
             self.on_model_download_finished
@@ -379,13 +327,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -402,13 +347,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -425,13 +367,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -448,13 +387,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -471,13 +407,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -494,13 +427,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -517,13 +447,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -540,13 +467,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -563,13 +487,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -586,13 +507,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -609,13 +527,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -632,13 +547,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -655,13 +567,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -678,13 +587,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -701,13 +607,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -724,13 +627,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -747,13 +647,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -770,13 +667,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -793,13 +687,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -816,13 +707,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -839,13 +727,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -862,13 +747,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -885,13 +767,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -908,13 +787,30 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
+                logger.error(
+                    f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
+                return
+        elif model_config["type"] == "grounding_dino_api":
+            from .grounding_dino_api import Grounding_DINO_API
+
+            try:
+                model_config["model"] = Grounding_DINO_API(
+                    model_config, on_message=self.new_model_status.emit
+                )
+                self.auto_segmentation_model_unselected.emit()
+                logger.info(
+                    f"✅ Model loaded successfully: {model_config['type']}"
+                )
+            except Exception as e:  # noqa
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -931,13 +827,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -954,13 +847,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -977,13 +867,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1003,21 +890,18 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
-        elif model_config["type"] == "yolov8_efficientvit_sam":
-            from .yolov8_efficientvit_sam import YOLOv8_EfficientViT_SAM
+        elif model_config["type"] == "yolov8_sam2":
+            from .yolov8_sam2 import YOLOv8SegmentAnything2
 
             try:
-                model_config["model"] = YOLOv8_EfficientViT_SAM(
+                model_config["model"] = YOLOv8SegmentAnything2(
                     model_config, on_message=self.new_model_status.emit
                 )
                 self.auto_segmentation_model_selected.emit()
@@ -1028,13 +912,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1053,13 +934,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1078,13 +956,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1103,13 +978,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1128,13 +1000,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
         elif model_config["type"] == "yolov5_obb":
             from .yolov5_obb import YOLOv5OBB
@@ -1148,13 +1017,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1174,13 +1040,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1199,13 +1062,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1224,13 +1084,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1249,13 +1106,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1274,13 +1128,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1299,13 +1150,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1324,13 +1172,10 @@ class ModelManager(QObject):
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 return
             # Request next files for prediction
             self.request_next_files_requested.emit()
@@ -1346,13 +1191,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1369,13 +1211,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1392,13 +1231,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1415,13 +1251,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1438,13 +1271,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1461,13 +1291,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1484,13 +1311,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1507,13 +1331,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1530,13 +1351,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1553,13 +1371,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1576,13 +1391,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1599,13 +1411,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1622,13 +1431,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1645,13 +1451,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1668,13 +1471,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1691,13 +1491,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1714,13 +1511,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1737,13 +1531,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1760,13 +1551,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1783,13 +1571,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1806,13 +1591,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1829,13 +1611,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1852,13 +1631,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1875,13 +1651,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1898,13 +1671,10 @@ class ModelManager(QObject):
                     f"✅ Model loaded successfully: {model_config['type']}"
                 )
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(
-                        "Error in loading model: {error_message}".format(
-                            error_message=str(e)
-                        )
-                    )
-                )
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model: {model_config['type']} with error: {str(e)}"
                 )
@@ -1930,9 +1700,39 @@ class ModelManager(QObject):
                 ) as ctx:
                     _ = ctx.run(_load_florence2)
             except Exception as e:  # noqa
-                self.new_model_status.emit(
-                    self.tr(f"Error in loading model: {str(e)}")
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
+                logger.error(
+                    f"❌ Error in loading model `{model_config['type']}` with error: {str(e)}"
                 )
+                return
+        elif model_config["type"] == "geco":
+            from .geco import GeCo
+
+            def _load_geco():
+                logger.info(f"⌛ Loading model: {model_config['type']}")
+                model_config["model"] = GeCo(
+                    model_config, on_message=self.new_model_status.emit
+                )
+                self.auto_segmentation_model_unselected.emit()
+                logger.info(
+                    f"✅ Model loaded successfully: {model_config['type']}"
+                )
+
+            try:
+                with TimeoutContext(
+                    timeout=300,
+                    timeout_message="""Model loading timeout! Please check your network connection.
+                                    Alternatively, you can try to load the model from local directory.""",
+                ) as ctx:
+                    _ = ctx.run(_load_geco)
+            except Exception as e:  # noqa
+                template = "Error in loading model: {error_message}"
+                translated_template = self.tr(template)
+                error_text = translated_template.format(error_message=str(e))
+                self.new_model_status.emit(error_text)
                 logger.error(
                     f"❌ Error in loading model `{model_config['type']}` with error: {str(e)}"
                 )
@@ -1945,12 +1745,10 @@ class ModelManager(QObject):
 
     def set_cache_auto_label(self, text, gid):
         """Set cache auto label"""
-        valid_models = [
-            "segment_anything_2_video",
-        ]
         if (
             self.loaded_model_config is not None
-            and self.loaded_model_config["type"] in valid_models
+            and self.loaded_model_config["type"]
+            in _CACHED_AUTO_LABELING_MODELS
         ):
             self.loaded_model_config["model"].set_cache_auto_label(text, gid)
 
@@ -1958,186 +1756,71 @@ class ModelManager(QObject):
         """Set auto labeling marks
         (For example, for segment_anything model, it is the marks for)
         """
-        marks_model_list = [
-            "segment_anything",
-            "segment_anything_2",
-            "segment_anything_2_video",
-            "sam_med2d",
-            "sam_hq",
-            "yolov5_sam",
-            "efficientvit_sam",
-            "yolov8_efficientvit_sam",
-            "grounding_sam",
-            "grounding_sam2",
-            "open_vision",
-            "edge_sam",
-            "florence2",
-        ]
         if (
             self.loaded_model_config is None
-            or self.loaded_model_config["type"] not in marks_model_list
+            or self.loaded_model_config["type"]
+            not in _AUTO_LABELING_MARKS_MODELS
         ):
             return
         self.loaded_model_config["model"].set_auto_labeling_marks(marks)
+
+    def set_auto_labeling_api_token(self, token):
+        """Set the API token for the model"""
+        if (
+            self.loaded_model_config is None
+            or self.loaded_model_config["type"]
+            not in _AUTO_LABELING_API_TOKEN_MODELS
+        ):
+            return
+        self.loaded_model_config["model"].set_auto_labeling_api_token(token)
 
     def set_auto_labeling_reset_tracker(self):
         """Resets the tracker to its initial state,
         clearing all tracked objects and internal states.
         """
-        model_list = [
-            "yolov5_det_track",
-            "yolov8_det_track",
-            "yolov8_obb_track",
-            "yolov8_seg_track",
-            "yolov8_pose_track",
-            "segment_anything_2_video",
-            "yolo11_det_track",
-            "yolo11_seg_track",
-            "yolo11_obb_track",
-            "yolo11_pose_track",
-        ]
         if (
             self.loaded_model_config is None
-            or self.loaded_model_config["type"] not in model_list
+            or self.loaded_model_config["type"]
+            not in _AUTO_LABELING_RESET_TRACKER_MODELS
         ):
             return
         self.loaded_model_config["model"].set_auto_labeling_reset_tracker()
 
     def set_auto_labeling_conf(self, value):
         """Set auto labeling confidences"""
-        model_list = [
-            "upn",
-            "damo_yolo",
-            "gold_yolo",
-            "grounding_dino",
-            "rtdetr",
-            "rtdetrv2",
-            "yolo_nas",
-            "yolov5_obb",
-            "yolov5_seg",
-            "yolov5_det_track",
-            "yolov5",
-            "yolov6",
-            "yolov6_face",
-            "yolov7",
-            "yolov8_obb",
-            "yolov8_pose",
-            "yolov8_seg",
-            "yolov8_det_track",
-            "yolov8_seg_track",
-            "yolov8_obb_track",
-            "yolov8_pose_track",
-            "yolov8",
-            "yolov9",
-            "yolov10",
-            "yolo11",
-            "yolo11_obb",
-            "yolo11_seg",
-            "yolo11_pose",
-            "yolo11_det_track",
-            "yolo11_seg_track",
-            "yolo11_obb_track",
-            "yolo11_pose_track",
-            "yolow",
-            "yolox",
-            "doclayout_yolo",
-        ]
         if (
             self.loaded_model_config is None
-            or self.loaded_model_config["type"] not in model_list
+            or self.loaded_model_config["type"]
+            not in _AUTO_LABELING_CONF_MODELS
         ):
             return
         self.loaded_model_config["model"].set_auto_labeling_conf(value)
 
     def set_auto_labeling_iou(self, value):
         """Set auto labeling iou"""
-        model_list = [
-            "upn",
-            "damo_yolo",
-            "gold_yolo",
-            "yolo_nas",
-            "yolov5_obb",
-            "yolov5_seg",
-            "yolov5_det_track",
-            "yolov5",
-            "yolov6",
-            "yolov7",
-            "yolov8_obb",
-            "yolov8_pose",
-            "yolov8_seg",
-            "yolov8_det_track",
-            "yolov8_seg_track",
-            "yolov8_obb_track",
-            "yolov8_pose_track",
-            "yolov8",
-            "yolov9",
-            "yolo11",
-            "yolo11_obb",
-            "yolo11_seg",
-            "yolo11_pose",
-            "yolo11_det_track",
-            "yolo11_seg_track",
-            "yolo11_obb_track",
-            "yolo11_pose_track",
-            "yolox",
-        ]
         if (
             self.loaded_model_config is None
-            or self.loaded_model_config["type"] not in model_list
+            or self.loaded_model_config["type"]
+            not in _AUTO_LABELING_IOU_MODELS
         ):
             return
         self.loaded_model_config["model"].set_auto_labeling_iou(value)
 
     def set_auto_labeling_preserve_existing_annotations_state(self, state):
-        model_list = [
-            "damo_yolo",
-            "gold_yolo",
-            "grounding_dino",
-            "rtdetr",
-            "rtdetrv2",
-            "yolo_nas",
-            "yolov5_obb",
-            "yolov5_seg",
-            "yolov5_det_track",
-            "yolov5",
-            "yolov6",
-            "yolov7",
-            "yolov8_obb",
-            "yolov8_pose",
-            "yolov8_seg",
-            "yolov8_det_track",
-            "yolov8_seg_track",
-            "yolov8_obb_track",
-            "yolov8_pose_track",
-            "yolov8",
-            "yolov9",
-            "yolov10",
-            "yolo11",
-            "yolo11_obb",
-            "yolo11_seg",
-            "yolo11_pose",
-            "yolo11_det_track",
-            "yolo11_seg_track",
-            "yolo11_obb_track",
-            "yolo11_pose_track",
-            "yolow",
-            "yolox",
-            "doclayout_yolo",
-            "florence2",
-        ]
         if (
             self.loaded_model_config is not None
-            and self.loaded_model_config["type"] in model_list
+            and self.loaded_model_config["type"]
+            in _AUTO_LABELING_PRESERVE_EXISTING_ANNOTATIONS_STATE_MODELS
         ):
             self.loaded_model_config[
                 "model"
             ].set_auto_labeling_preserve_existing_annotations_state(state)
 
     def set_auto_labeling_prompt(self):
-        model_list = ["segment_anything_2_video"]
         if (
             self.loaded_model_config is not None
-            and self.loaded_model_config["type"] in model_list
+            and self.loaded_model_config["type"]
+            in _AUTO_LABELING_PROMPT_MODELS
         ):
             self.loaded_model_config["model"].set_auto_labeling_prompt()
 
@@ -2148,7 +1831,12 @@ class ModelManager(QObject):
             self.loaded_model_config = None
 
     def predict_shapes(
-        self, image, filename=None, text_prompt=None, run_tracker=False
+        self,
+        image,
+        filename=None,
+        text_prompt=None,
+        run_tracker=False,
+        batch=False,
     ):
         """Predict shapes.
         NOTE: This function is blocking. The model can take a long time to
@@ -2160,6 +1848,7 @@ class ModelManager(QObject):
             )
             self.prediction_finished.emit()
             return
+
         try:
             if text_prompt is not None:
                 auto_labeling_result = self.loaded_model_config[
@@ -2173,17 +1862,22 @@ class ModelManager(QObject):
                 auto_labeling_result = self.loaded_model_config[
                     "model"
                 ].predict_shapes(image, filename)
-            self.new_auto_labeling_result.emit(auto_labeling_result)
-            self.new_model_status.emit(
-                self.tr("Finished inferencing AI model. Check the result.")
-            )
+
+            if batch:
+                return auto_labeling_result
+            else:
+                self.new_auto_labeling_result.emit(auto_labeling_result)
+                self.new_model_status.emit(
+                    self.tr("Finished inferencing AI model. Check the result.")
+                )
+
         except Exception as e:  # noqa
             logger.error(f"Error in predict_shapes: {e}")
-            self.new_model_status.emit(
-                self.tr(
-                    f"Error in model prediction: {e}. Please check the model."
-                )
-            )
+            template = "Error in model prediction: {error_message}"
+            translated_template = self.tr(template)
+            error_text = translated_template.format(error_message=str(e))
+            self.new_model_status.emit(error_text)
+
         self.prediction_finished.emit()
 
     @pyqtSlot()
@@ -2253,42 +1947,35 @@ class ModelManager(QObject):
             return
 
         # Currently only segment_anything-like model supports this feature
-        if self.loaded_model_config["type"] not in [
-            "segment_anything",
-            "segment_anything_2",
-            "sam_med2d",
-            "sam_hq",
-            "yolov5_sam",
-            "efficientvit_sam",
-            "yolov8_efficientvit_sam",
-            "grounding_sam",
-            "grounding_sam2",
-            "edge_sam",
-        ]:
+        if (
+            self.loaded_model_config["type"]
+            not in _ON_NEXT_FILES_CHANGED_MODELS
+        ):
             return
 
         self.loaded_model_config["model"].on_next_files_changed(next_files)
 
+    # Specific model setters
     def set_upn_mode(self, mode):
         """Set UPN mode"""
         if self.loaded_model_config is None:
             return
 
-        if self.loaded_model_config["type"] not in [
-            "upn",
-        ]:
+        if self.loaded_model_config["type"] == "upn":
+            self.loaded_model_config["model"].set_upn_mode(mode)
+
+    def set_groundingdino_mode(self, mode):
+        """Set GroundingDino (API) mode"""
+        if self.loaded_model_config is None:
             return
 
-        self.loaded_model_config["model"].set_upn_mode(mode)
+        if self.loaded_model_config["type"] == "grounding_dino_api":
+            self.loaded_model_config["model"].set_groundingdino_mode(mode)
 
     def set_florence2_mode(self, mode):
         """Set Florence2 mode"""
         if self.loaded_model_config is None:
             return
 
-        if self.loaded_model_config["type"] not in [
-            "florence2",
-        ]:
-            return
-
-        self.loaded_model_config["model"].set_florence2_mode(mode)
+        if self.loaded_model_config["type"] == "florence2":
+            self.loaded_model_config["model"].set_florence2_mode(mode)

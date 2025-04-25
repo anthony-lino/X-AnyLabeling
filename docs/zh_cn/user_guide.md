@@ -26,6 +26,7 @@
       * [4.6 MOT标签](#46-mot标签)
       * [4.7 PPOCR标签](#47-ppocr标签)
       * [4.8 ODVG标签](#48-odvg标签)
+      * [4.9 VLM-R1-OVD标签](#49-vlm-r1-ovd标签)
    * [5. 工具栏](#5-工具栏)
       * [5.1 数据统计](#51-数据统计)
       * [5.2 保存子图](#52-保存子图)
@@ -42,6 +43,7 @@
       * [7.4 自动切换编辑模式](#74-自动切换编辑模式)
       * [7.5 悬浮自动高亮模式](#75-悬浮自动高亮模式)
       * [7.6 对象属性自定义](#76-对象属性自定义)
+      * [7.7 模型下载源配置](#77-模型下载源配置)
    * [8. 任务](#8-任务)
       * [8.1 图像分类](#81-图像分类)
       * [8.2 目标检测](#82-目标检测)
@@ -53,6 +55,7 @@
       * [8.8 交互式视频目标分割](#88-交互式视频目标分割)
       * [8.9 抠图](#89-抠图)
       * [8.10 视觉-语言](#810-视觉-语言)
+      * [8.11 基于检测与分割的零样本计数](#811-基于检测与分割的零样本计数)
    * [9. 模型](#9-模型)
 
 ## 1. 文件
@@ -252,9 +255,17 @@ X-AnyLabeling 支持对当前图片进行色彩调整。具体操作如下：
 
 ### 3.3 对象可视化
 
-对象可视化功能包括显示当前图片中已标注对象的文本描述（Ctrl+T）、标签名称（Ctrl+L）、分组编号、旋转角度、预测分数等信息。用户可以通过快捷键或者在界面上方菜单栏中的 `视图` 下拉选项中勾选相应功能来进行设置。
+对象可视化功能包括显示当前图片中已标注对象的文本描述（Ctrl+T）、标签名称（Ctrl+L）、分组编号、旋转角度、预测分数等信息。
 
-此外，当用户将光标移至感兴趣的对象时，GUI 界面底部的信息栏会实时显示当前对象的宽度、高度等信息。
+用户可以通过快捷键或者在界面上方菜单栏中的 `视图` 下拉选项中勾选相应功能来进行设置。
+
+同时，当用户将光标移至感兴趣的对象时，GUI 界面底部的信息栏会实时显示当前对象的宽度、高度等信息。
+
+<p align="center">
+  <img src="../../assets/resources/filter.png" alt="Brightness-Contrast">
+</p>
+
+在 GUI 界面的右侧中间面板，我们提供了 `标签过滤器` 和 `组编号` 过滤器，方便你筛选显示特定标签或组编号的对象。
 
 ### 3.4 十字瞄准线
 
@@ -322,6 +333,7 @@ X-AnyLabeling 支持对当前图片进行色彩调整。具体操作如下：
 
 1. 对于 COCO 目标检测、实例分割任务，请参考 [classes.txt](../../assets/classes.txt) 准备配置文件，其中每一行代表一个类别，编号从上至下依次递增。
 2. 对于 COCO 关键点检测任务，请参考 [yolov8_pose.yaml](../../assets/yolov8_pose.yaml) 进行准备，其中 `has_visible` 参数请参考[官方定义](https://docs.ultralytics.com/datasets/pose/#ultralytics-yolo-format)。
+3. 对于 COCO 实例分割任务，请参考 [labels.txt](../../assets/labels.txt) 进行准备。
 
 **导入任务**：
 1. 点击上方菜单栏的 `导入` 按钮。
@@ -337,7 +349,7 @@ X-AnyLabeling 支持对当前图片进行色彩调整。具体操作如下：
 
 导出路径默认保存在当前图片目录的同级目录下的 `annotations` 文件夹内。
 
-> COCO 标签文件样式可参考 [instances_default.json](../../assets/annotations/instances_default.json)。
+> COCO 格式的对应标签文件样式可参考 [annotations](../../assets/annotations) 目录。
 
 ### 4.4 DOTA标签
 
@@ -357,7 +369,7 @@ X-AnyLabeling 支持对当前图片进行色彩调整。具体操作如下：
 导出路径默认保存在当前图片目录的同级目录下的 `labelTxt` 文件夹内。
 
 > DOTA 标签文件样式可参考 [demo_obb.txt](../../assets/labelTxt/demo_obb.txt)。
-
+instances_default
 ### 4.5 MASK标签
 
 当前 X-AnyLabeling 最新版本支持一键导入/导出语义分割任务相关的掩码标签文件（*.png）。
@@ -489,6 +501,25 @@ python3 tools/label_converter.py --task mots --mode custom_to_gt --src_path /pat
 4. 选择保存路径点击确定即可。
 
 > ODVG 标签文件样式可参考 [ODVG](../../assets/ODVG)。
+
+### 4.9 VLM-R1-OVD标签
+
+当前 X-AnyLabeling 最新版本支持一键导入/导出 VLM-R1-OVD 标签文件。
+
+**导入任务**：
+1. 点击上方菜单栏的 `导入` 按钮。
+2. 选择对应的任务。
+3. 选择标签文件所在目录，点击确定即可.
+
+**导出任务**:
+1. 点击上方菜单栏的 `导出` 按钮。
+2. 选择对应的任务。
+3. 根据实际需要填写相应的配置项点击确定即可。
+
+其中，[classes.txt](../../assets/classes.txt) 文件用于指定需要导出的类别或短语提示。若不指定，则默认以每张图片为单位检测到所有类别或短语提示作为提示类别进行导出，并自动跳过空标签文件。
+
+> VLM-R1-OVD 标签文件导出示例可参考 [vlm_r1_ovd.jsonl](../../assets/vlm_r1_ovd.jsonl) 文件。
+
 
 ### 5. 工具栏
 
@@ -743,6 +774,31 @@ shape:
 ...
 ```
 
+### 7.7 模型下载源配置
+
+X-AnyLabeling 支持从不同的模型中心下载预训练模型。用户可以通过设置环境变量、修改配置文件 `.xanylabelingrc` 或根据软件语言来指定模型下载源。下载源的优先级顺序如下：
+
+1.  **环境变量 (最高优先级)**: 设置环境变量 `XANYLABELING_MODEL_HUB`。
+    -   例如，在 Linux/macOS 使用 `export XANYLABELING_MODEL_HUB=modelscope`。
+    -   在 Windows 使用 `set XANYLABELING_MODEL_HUB=modelscope`。
+    -   如果此环境变量设置为 `modelscope`，将强制使用 ModelScope，覆盖配置文件的设置。如果设置为其他值或为空，则会考虑配置文件。
+
+2.  **配置文件 (中等优先级)**: 打开用户目录下的配置文件 `.xanylabelingrc`。
+    -   找到 `model_hub` 字段。
+    -   可选值为 `github` (默认) 或 `modelscope`。
+    -   如果环境变量 `XANYLABELING_MODEL_HUB` 未设置或为空，则此配置生效。设置为 `model_hub: modelscope` 将优先从 ModelScope 下载模型。
+
+    ```yaml
+    language: en_US
+    model_hub: github  # 可选: github, modelscope
+    ...
+    ```
+
+3.  **语言设置 (最低优先级)**:
+    -   如果环境变量和配置文件中的 `model_hub` 都没有明确设置为 `modelscope`（即它们未设置、为空或为 `github`），则软件语言设置为中文 (`language: zh_CN`) 时，会默认尝试从 ModelScope 下载模型。
+    -   在其他情况下（例如，语言为英文，且没有其他设置指定 `modelscope`），将使用默认的 GitHub URL。
+
+
 ## 8. 任务
 
 ### 8.1 图像分类
@@ -787,6 +843,10 @@ shape:
 ### 8.10 视觉-语言
 
 - Florence 2：[链接](../../examples/vision_language/florence2/README.md)
+
+### 8.11 基于检测与分割的零样本计数
+
+- GeCo：[链接](../../examples/counting/geco/README.md)
 
 ## 9. 模型
 

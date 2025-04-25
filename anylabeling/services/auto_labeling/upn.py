@@ -14,7 +14,13 @@ from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.opencv import qt_img_to_rgb_cv_img
 from .model import Model
 from .types import AutoLabelingResult
-from .__base__.upn import UPNWrapper
+
+try:
+    from .__base__.upn import UPNWrapper
+
+    UPN_AVAILABLE = True
+except ImportError:
+    UPN_AVAILABLE = False
 
 
 class UPN(Model):
@@ -27,8 +33,8 @@ class UPN(Model):
             "name",
             "display_name",
             "model_path",
-            "confidence_threshold",
-            "nms_threshold",
+            "iou_threshold",
+            "conf_threshold",
         ]
         widgets = [
             "button_run",
@@ -44,6 +50,10 @@ class UPN(Model):
         default_output_mode = "rectangle"
 
     def __init__(self, model_config, on_message) -> None:
+        if not UPN_AVAILABLE:
+            message = "UPN model will not be available. Please install related packages and try again."
+            raise ImportError(message)
+
         # Run the parent class's init method
         super().__init__(model_config, on_message)
         model_name = self.config["type"]
@@ -59,8 +69,8 @@ class UPN(Model):
         # TODO: Add CPU support for UPN
         self.net = UPNWrapper(model_abs_path, "cuda")
         self.prompt_type = "coarse_grained_prompt"
-        self.conf_thres = self.config.get("confidence_threshold", 0.3)
-        self.nms_thres = self.config.get("nms_threshold", 0.8)
+        self.conf_thres = self.config.get("iou_threshold", 0.3)
+        self.nms_thres = self.config.get("conf_threshold", 0.8)
         self._check_prompt_type()
 
     def _check_prompt_type(self):

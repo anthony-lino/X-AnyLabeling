@@ -3,8 +3,10 @@ import math
 import textwrap
 import platform
 import subprocess
-from typing import Iterator, Tuple
+import webbrowser
+from difflib import SequenceMatcher
 from importlib_metadata import version as get_package_version
+from typing import Iterator, Tuple
 
 
 def format_bold(text):
@@ -109,6 +111,19 @@ def collect_system_info():
     return system_info, pkg_info
 
 
+def find_most_similar_label(text, valid_labels):
+    max_similarity = 0
+    most_similar_label = valid_labels[0]
+
+    for label in valid_labels:
+        similarity = SequenceMatcher(None, text, label).ratio()
+        if similarity > max_similarity:
+            max_similarity = similarity
+            most_similar_label = label
+
+    return most_similar_label
+
+
 def get_installed_package_version(package_name):
     try:
         return get_package_version(package_name)
@@ -144,3 +159,30 @@ def get_gpu_info():
         return ", ".join(smi_output.strip().split("\n"))
     except Exception:
         return None
+
+
+def open_url(url: str) -> None:
+    """Open URL in browser while suppressing TTY warnings"""
+    try:
+        if platform.system() == "Linux":
+            # Check if running in WSL
+            with open("/proc/version", "r") as f:
+                if "microsoft" in f.read().lower():
+                    # Use powershell.exe for WSL
+                    subprocess.run(
+                        [
+                            "powershell.exe",
+                            "-Command",
+                            f'Start-Process "{url}"',
+                        ]
+                    )
+                else:
+                    # For native Linux, use xdg-open
+                    subprocess.run(
+                        ["xdg-open", url], stderr=subprocess.DEVNULL
+                    )
+        else:
+            webbrowser.open(url)
+    except Exception:
+        # Fallback to regular webbrowser.open
+        webbrowser.open(url)

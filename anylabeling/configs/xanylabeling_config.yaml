@@ -1,4 +1,5 @@
 language: en_US
+model_hub: github  # github, modelscope
 auto_save: true
 display_label_popup: true
 store_data: false
@@ -94,6 +95,7 @@ shortcuts:
   open: Ctrl+I
   open_video: Ctrl+O
   open_dir: Ctrl+U
+  open_chatbot: Ctrl+B
   quit: Ctrl+Q
   save: Ctrl+S
   save_as: Ctrl+Shift+S

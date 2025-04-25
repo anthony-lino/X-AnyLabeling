@@ -172,9 +172,11 @@ class Florence2(Model):
         # Move inputs to device and match model dtype
         model_dtype = next(self.model.parameters()).dtype
         inputs = {
-            k: v.to(device=self.device, dtype=model_dtype)
-            if torch.is_floating_point(v)
-            else v.to(self.device)
+            k: (
+                v.to(device=self.device, dtype=model_dtype)
+                if torch.is_floating_point(v)
+                else v.to(self.device)
+            )
             for k, v in inputs.items()
         }
 
@@ -229,7 +231,7 @@ class Florence2(Model):
             in [
                 "<CAPTION_TO_PHRASE_GROUNDING>",
                 "<REFERRING_EXPRESSION_SEGMENTATION>",
-                "<OVD>",
+                "<OPEN_VOCABULARY_DETECTION>",
             ]
             and not text_prompt
         ):
@@ -441,7 +443,7 @@ class Florence2(Model):
                 points = polygon[0] if polygon else []
                 for i in range(0, len(points), 2):
                     shape.add_point(QtCore.QPointF(points[i], points[i + 1]))
-                shape.add_point(QtCore.QPointF(points[0][0], points[0][1]))
+                shape.add_point(QtCore.QPointF(points[0], points[1]))
                 shape.closed = True
                 shapes.append(shape)
             result = AutoLabelingResult(shapes, replace=self.replace)

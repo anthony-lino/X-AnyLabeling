@@ -4,18 +4,10 @@ import json
 import math
 import os
 import os.path as osp
-import pathlib
 import re
 import shutil
-import time
-import webbrowser
 
 import cv2
-from difflib import SequenceMatcher
-import yaml
-
-import imgviz
-import natsort
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot
@@ -30,7 +22,6 @@ from PyQt5.QtWidgets import (
     QWhatsThis,
     QWidget,
     QMessageBox,
-    QProgressDialog,
     QScrollArea,
 )
 
@@ -44,17 +35,17 @@ from ...app_info import (
 from . import utils
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
-from .label_converter import LabelConverter
 from .logger import logger
 from .shape import Shape
 from .widgets import (
+    AboutDialog,
     AutoLabelingWidget,
     BrightnessContrastDialog,
     Canvas,
+    ChatbotDialog,
     CrosshairSettingsDialog,
     FileDialogPreview,
-    TextInputDialog,
-    ImageCropperDialog,
+    GroupIDFilterComboBox,
     LabelDialog,
     LabelFilterComboBox,
     LabelListWidget,
@@ -62,16 +53,13 @@ from .widgets import (
     LabelModifyDialog,
     GroupIDModifyDialog,
     OverviewDialog,
+    SearchBar,
     ToolBar,
     UniqueLabelQListWidget,
     ZoomWidget,
 )
 
-LABEL_COLORMAP = imgviz.label_colormap()
-
-# Green for the first label
-LABEL_COLORMAP[2] = LABEL_COLORMAP[1]
-LABEL_COLORMAP[1] = [0, 180, 33]
+LABEL_COLORMAP = utils.label_colormap()
 LABEL_OPACITY = 128
 
 
@@ -180,8 +168,9 @@ class LabelingWidget(LabelDialog):
             "QDockWidget::title {" "text-align: center;" "padding: 0px;" "}"
         )
 
-        # Create and add combobox for showing unique labels in group
+        # Create and add combobox for showing unique labels or group ids in group
         self.label_filter_combobox = LabelFilterComboBox(self)
+        self.gid_filter_combobox = GroupIDFilterComboBox(self)
 
         self.label_list.item_selection_changed.connect(
             self.label_selection_changed
@@ -218,7 +207,7 @@ class LabelingWidget(LabelDialog):
             "QDockWidget::title {" "text-align: center;" "padding: 0px;" "}"
         )
 
-        self.file_search = QtWidgets.QLineEdit()
+        self.file_search = SearchBar()
         self.file_search.setPlaceholderText(self.tr("Search Filename"))
         self.file_search.textChanged.connect(self.file_search_changed)
         self.file_list_widget = QtWidgets.QListWidget()
@@ -226,18 +215,16 @@ class LabelingWidget(LabelDialog):
             self.file_selection_changed
         )
         file_list_layout = QtWidgets.QVBoxLayout()
-        file_list_layout.setContentsMargins(0, 0, 0, 0)
-        file_list_layout.setSpacing(0)
+        file_list_layout.setContentsMargins(0, 4, 0, 0)
+        file_list_layout.setSpacing(4)
         file_list_layout.addWidget(self.file_search)
         file_list_layout.addWidget(self.file_list_widget)
-        self.file_dock = QtWidgets.QDockWidget(self.tr("Files"), self)
+        self.file_dock = QtWidgets.QDockWidget("", self)
         self.file_dock.setObjectName("Files")
+        self.file_dock.setTitleBarWidget(QtWidgets.QWidget(self))
         file_list_widget = QtWidgets.QWidget()
         file_list_widget.setLayout(file_list_layout)
         self.file_dock.setWidget(file_list_widget)
-        self.file_dock.setStyleSheet(
-            "QDockWidget::title {" "text-align: center;" "padding: 0px;" "}"
-        )
 
         self.zoom_widget = ZoomWidget()
         self.setAcceptDrops(True)
@@ -303,7 +290,7 @@ class LabelingWidget(LabelDialog):
         )
         openvideo = action(
             self.tr("&Open Video"),
-            self.open_video_file,
+            lambda: utils.open_video_file(self),
             shortcuts["open_video"],
             "video",
             self.tr("Open video file"),
@@ -365,7 +352,7 @@ class LabelingWidget(LabelDialog):
         )
         run_all_images = action(
             self.tr("&Auto Run"),
-            self.run_all_images,
+            lambda: utils.run_all_images(self),
             shortcuts["auto_run"],
             "auto-run",
             self.tr("Auto run all images at once"),
@@ -529,7 +516,7 @@ class LabelingWidget(LabelDialog):
         )
         group_selected_shapes = action(
             self.tr("Group Selected Shapes"),
-            self.canvas.group_selected_shapes,
+            self.group_selected_shapes,
             shortcuts["group_selected_shapes"],
             None,
             self.tr("Group shapes by assigning a same group_id"),
@@ -537,7 +524,7 @@ class LabelingWidget(LabelDialog):
         )
         ungroup_selected_shapes = action(
             self.tr("Ungroup Selected Shapes"),
-            self.canvas.ungroup_selected_shapes,
+            self.ungroup_selected_shapes,
             shortcuts["ungroup_selected_shapes"],
             None,
             self.tr("Ungroup shapes"),
@@ -627,18 +614,10 @@ class LabelingWidget(LabelDialog):
         )
         save_crop = action(
             self.tr("&Save Cropped Image"),
-            self.save_crop,
+            lambda: utils.save_crop(self),
             icon="crop",
             tip=self.tr(
                 "Save cropped image. (Support rectangle/rotation/polygon shape_type)"
-            ),
-        )
-        save_mask = action(
-            self.tr("&Save Masked Image"),
-            self.save_mask,
-            icon="crop",
-            tip=self.tr(
-                "Save masked image. (Support rectangle/rotation/polygon shape_type)"
             ),
         )
         label_manager = action(
@@ -664,7 +643,7 @@ class LabelingWidget(LabelDialog):
         )
         hbb_to_obb = action(
             self.tr("&Convert HBB to OBB"),
-            self.hbb_to_obb,
+            lambda: utils.shape_conversion(self, "hbb_to_obb"),
             icon="convert",
             tip=self.tr(
                 "Perform conversion from horizontal bounding box to oriented bounding box"
@@ -672,7 +651,7 @@ class LabelingWidget(LabelDialog):
         )
         obb_to_hbb = action(
             self.tr("&Convert OBB to HBB"),
-            self.obb_to_hbb,
+            lambda: utils.shape_conversion(self, "obb_to_hbb"),
             icon="convert",
             tip=self.tr(
                 "Perform conversion from oriented bounding box to horizontal bounding box"
@@ -680,11 +659,26 @@ class LabelingWidget(LabelDialog):
         )
         polygon_to_hbb = action(
             self.tr("&Convert Polygon to HBB"),
-            self.polygon_to_hbb,
+            lambda: utils.shape_conversion(self, "polygon_to_hbb"),
             icon="convert",
             tip=self.tr(
                 "Perform conversion from polygon to horizontal bounding box"
             ),
+        )
+        polygon_to_obb = action(
+            self.tr("&Convert Polygon to OBB"),
+            lambda: utils.shape_conversion(self, "polygon_to_obb"),
+            icon="convert",
+            tip=self.tr(
+                "Perform conversion from polygon to oriented bounding box"
+            ),
+        )
+        open_chatbot = action(
+            self.tr("ChatBot"),
+            self.open_chatbot,
+            shortcuts["open_chatbot"],
+            icon="chatbot",
+            tip=self.tr("Open chatbot dialog"),
         )
 
         documentation = action(
@@ -693,17 +687,11 @@ class LabelingWidget(LabelDialog):
             icon="docs",
             tip=self.tr("Show documentation"),
         )
-        contact = action(
-            self.tr("&Contact me"),
-            self.contact,
-            icon="contact",
-            tip=self.tr("Show contact page"),
-        )
-        information = action(
-            self.tr("&Information"),
-            self.information,
+        about = action(
+            self.tr("&About"),
+            self.about,
             icon="help",
-            tip=self.tr("Show system information"),
+            tip=self.tr("Open about dialog"),
         )
 
         loop_thru_labels = action(
@@ -897,28 +885,28 @@ class LabelingWidget(LabelDialog):
         # Upload
         upload_image_flags_file = action(
             self.tr("&Upload Image Flags File"),
-            self.upload_image_flags_file,
+            lambda: utils.upload_image_flags_file(self),
             None,
             icon="format_classify",
             tip=self.tr("Upload Custom Image Flags File"),
         )
         upload_label_flags_file = action(
             self.tr("&Upload Label Flags File"),
-            self.upload_label_flags_file,
+            lambda: utils.upload_label_flags_file(self, LABEL_OPACITY),
             None,
             icon="format_classify",
             tip=self.tr("Upload Custom Label Flags File"),
         )
         upload_shape_attrs_file = action(
             self.tr("&Upload Attributes File"),
-            self.upload_shape_attrs_file,
+            lambda: utils.upload_shape_attrs_file(self, LABEL_OPACITY),
             None,
             icon="format_classify",
             tip=self.tr("Upload Custom Attributes File"),
         )
         upload_yolo_hbb_annotation = action(
             self.tr("&Upload YOLO-Hbb Annotations"),
-            lambda: self.upload_yolo_annotation("hbb"),
+            lambda: utils.upload_yolo_annotation(self, "hbb", LABEL_OPACITY),
             None,
             icon="format_yolo",
             tip=self.tr(
@@ -927,7 +915,7 @@ class LabelingWidget(LabelDialog):
         )
         upload_yolo_obb_annotation = action(
             self.tr("&Upload YOLO-Obb Annotations"),
-            lambda: self.upload_yolo_annotation("obb"),
+            lambda: utils.upload_yolo_annotation(self, "obb", LABEL_OPACITY),
             None,
             icon="format_yolo",
             tip=self.tr(
@@ -936,77 +924,79 @@ class LabelingWidget(LabelDialog):
         )
         upload_yolo_seg_annotation = action(
             self.tr("&Upload YOLO-Seg Annotations"),
-            lambda: self.upload_yolo_annotation("seg"),
+            lambda: utils.upload_yolo_annotation(self, "seg", LABEL_OPACITY),
             None,
             icon="format_yolo",
             tip=self.tr("Upload Custom YOLO Segmentation Annotations"),
         )
         upload_yolo_pose_annotation = action(
             self.tr("&Upload YOLO-Pose Annotations"),
-            lambda: self.upload_yolo_annotation("pose"),
+            lambda: utils.upload_yolo_annotation(self, "pose", LABEL_OPACITY),
             None,
             icon="format_yolo",
             tip=self.tr("Upload Custom YOLO Pose Annotations"),
         )
         upload_voc_det_annotation = action(
             self.tr("&Upload VOC Detection Annotations"),
-            lambda: self.upload_voc_annotation("rectangle"),
+            lambda: utils.upload_voc_annotation(self, "rectangle"),
             None,
             icon="format_voc",
             tip=self.tr("Upload Custom Pascal VOC Detection Annotations"),
         )
         upload_voc_seg_annotation = action(
             self.tr("&Upload VOC Segmentation Annotations"),
-            lambda: self.upload_voc_annotation("polygon"),
+            lambda: utils.upload_voc_annotation(self, "polygon"),
             None,
             icon="format_voc",
             tip=self.tr("Upload Custom Pascal VOC Segmentation Annotations"),
         )
         upload_coco_det_annotation = action(
             self.tr("&Upload COCO Detection Annotations"),
-            lambda: self.upload_coco_annotation("rectangle"),
+            lambda: utils.upload_coco_annotation(self, "rectangle"),
             None,
             icon="format_coco",
             tip=self.tr("Upload Custom COCO Detection Annotations"),
         )
         upload_coco_seg_annotation = action(
-            self.tr("&Upload COCO Segmentation Annotations"),
-            lambda: self.upload_coco_annotation("polygon"),
+            self.tr("&Upload COCO Instance Segmentation Annotations"),
+            lambda: utils.upload_coco_annotation(self, "polygon"),
             None,
             icon="format_coco",
-            tip=self.tr("Upload Custom COCO Segmentation Annotations"),
+            tip=self.tr(
+                "Upload Custom COCO Instance Segmentation Annotations"
+            ),
         )
         upload_coco_pose_annotation = action(
             self.tr("&Upload COCO Keypoint Annotations"),
-            lambda: self.upload_coco_annotation("pose"),
+            lambda: utils.upload_coco_annotation(self, "pose"),
             None,
             icon="format_coco",
             tip=self.tr("Upload Custom COCO Keypoint Annotations"),
         )
         upload_dota_annotation = action(
             self.tr("&Upload DOTA Annotations"),
-            self.upload_dota_annotation,
+            lambda: utils.upload_dota_annotation(self),
             None,
             icon="format_dota",
             tip=self.tr("Upload Custom DOTA Annotations"),
         )
         upload_mask_annotation = action(
             self.tr("&Upload MASK Annotations"),
-            self.upload_mask_annotation,
+            lambda: utils.upload_mask_annotation(self, LABEL_OPACITY),
             None,
             icon="format_mask",
             tip=self.tr("Upload Custom MASK Annotations"),
         )
         upload_mot_annotation = action(
             self.tr("&Upload MOT Annotations"),
-            self.upload_mot_annotation,
+            lambda: utils.upload_mot_annotation(self, LABEL_OPACITY),
             None,
             icon="format_mot",
             tip=self.tr("Upload Custom Multi-Object-Tracking Annotations"),
         )
         upload_odvg_annotation = action(
             self.tr("&Upload ODVG Annotations"),
-            self.upload_odvg_annotation,
+            lambda: utils.upload_odvg_annotation(self),
             None,
             icon="format_odvg",
             tip=self.tr(
@@ -1015,25 +1005,32 @@ class LabelingWidget(LabelDialog):
         )
         upload_ppocr_rec_annotation = action(
             self.tr("&Upload PPOCR-Rec Annotations"),
-            lambda: self.upload_ppocr_annotation("rec"),
+            lambda: utils.upload_ppocr_annotation(self, "rec"),
             None,
             icon="format_ppocr",
             tip=self.tr("Upload Custom PPOCR Recognition Annotations"),
         )
         upload_ppocr_kie_annotation = action(
             self.tr("&Upload PPOCR-KIE Annotations"),
-            lambda: self.upload_ppocr_annotation("kie"),
+            lambda: utils.upload_ppocr_annotation(self, "kie"),
             None,
             icon="format_ppocr",
             tip=self.tr(
                 "Upload Custom PPOCR Key Information Extraction (KIE - Semantic Entity Recognition & Relation Extraction) Annotations"
             ),
         )
+        upload_vlm_r1_ovd_annotation = action(
+            self.tr("&Upload VLM-R1 OVD Annotations"),
+            lambda: utils.upload_vlm_r1_ovd_annotation(self),
+            None,
+            icon="format_vlm_r1_ovd",
+            tip=self.tr("Upload Custom VLM-R1 OVD Annotations"),
+        )
 
         # Export
         export_yolo_hbb_annotation = action(
             self.tr("&Export YOLO-Hbb Annotations"),
-            lambda: self.export_yolo_annotation("hbb"),
+            lambda: utils.export_yolo_annotation(self, "hbb"),
             None,
             icon="format_yolo",
             tip=self.tr(
@@ -1042,7 +1039,7 @@ class LabelingWidget(LabelDialog):
         )
         export_yolo_obb_annotation = action(
             self.tr("&Export YOLO-Obb Annotations"),
-            lambda: self.export_yolo_annotation("obb"),
+            lambda: utils.export_yolo_annotation(self, "obb"),
             None,
             icon="format_yolo",
             tip=self.tr(
@@ -1051,77 +1048,79 @@ class LabelingWidget(LabelDialog):
         )
         export_yolo_seg_annotation = action(
             self.tr("&Export YOLO-Seg Annotations"),
-            lambda: self.export_yolo_annotation("seg"),
+            lambda: utils.export_yolo_annotation(self, "seg"),
             None,
             icon="format_yolo",
             tip=self.tr("Export Custom YOLO Segmentation Annotations"),
         )
         export_yolo_pose_annotation = action(
             self.tr("&Export YOLO-Pose Annotations"),
-            lambda: self.export_yolo_annotation("pose"),
+            lambda: utils.export_yolo_annotation(self, "pose"),
             None,
             icon="format_yolo",
             tip=self.tr("Export Custom YOLO Pose Annotations"),
         )
         export_voc_det_annotation = action(
             self.tr("&Export VOC Detection Annotations"),
-            lambda: self.export_voc_annotation("rectangle"),
+            lambda: utils.export_voc_annotation(self, "rectangle"),
             None,
             icon="format_voc",
             tip=self.tr("Export Custom PASCAL VOC Detection Annotations"),
         )
         export_voc_seg_annotation = action(
             self.tr("&Export VOC Segmentation Annotations"),
-            lambda: self.export_voc_annotation("polygon"),
+            lambda: utils.export_voc_annotation(self, "polygon"),
             None,
             icon="format_voc",
             tip=self.tr("Export Custom PASCAL VOC Segmentation Annotations"),
         )
         export_coco_det_annotation = action(
             self.tr("&Export COCO Detection Annotations"),
-            lambda: self.export_coco_annotation("rectangle"),
+            lambda: utils.export_coco_annotation(self, "rectangle"),
             None,
             icon="format_coco",
             tip=self.tr("Export Custom COCO Rectangle Annotations"),
         )
         export_coco_seg_annotation = action(
-            self.tr("&Export COCO Segmentation Annotations"),
-            lambda: self.export_coco_annotation("polygon"),
+            self.tr("&Export COCO Instance Segmentation Annotations"),
+            lambda: utils.export_coco_annotation(self, "polygon"),
             None,
             icon="format_coco",
-            tip=self.tr("Export Custom COCO Segmentation Annotations"),
+            tip=self.tr(
+                "Export Custom COCO Instance Segmentation Annotations"
+            ),
         )
         export_coco_pose_annotation = action(
             self.tr("&Export COCO Keypoint Annotations"),
-            lambda: self.export_coco_annotation("pose"),
+            lambda: utils.export_coco_annotation(self, "pose"),
             None,
             icon="format_coco",
             tip=self.tr("Export Custom COCO Keypoint Annotations"),
         )
         export_dota_annotation = action(
             self.tr("&Export DOTA Annotations"),
-            self.export_dota_annotation,
+            lambda: utils.export_dota_annotation(self),
             None,
             icon="format_dota",
             tip=self.tr("Export Custom DOTA Annotations"),
         )
         export_mask_annotation = action(
             self.tr("&Export MASK Annotations"),
-            self.export_mask_annotation,
+            lambda: utils.export_mask_annotation(self),
             None,
             icon="format_mask",
             tip=self.tr("Export Custom MASK Annotations - RGB/Gray"),
         )
         export_mot_annotation = action(
             self.tr("&Export MOT Annotations"),
-            self.export_mot_annotation,
+            lambda: utils.export_mot_annotation(self, "mot"),
             None,
             icon="format_mot",
             tip=self.tr("Export Custom Multi-Object-Tracking Annotations"),
         )
         export_mots_annotation = action(
             self.tr("&Export MOTS Annotations"),
-            self.export_mots_annotation,
+            lambda: utils.export_mot_annotation(self, "mots"),
             None,
             icon="format_mot",
             tip=self.tr(
@@ -1130,7 +1129,7 @@ class LabelingWidget(LabelDialog):
         )
         export_odvg_annotation = action(
             self.tr("&Export ODVG Annotations"),
-            self.export_odvg_annotation,
+            lambda: utils.export_odvg_annotation(self),
             None,
             icon="format_odvg",
             tip=self.tr(
@@ -1139,19 +1138,26 @@ class LabelingWidget(LabelDialog):
         )
         export_pporc_rec_annotation = action(
             self.tr("&Export PPOCR-Rec Annotations"),
-            lambda: self.export_pporc_annotation("rec"),
+            lambda: utils.export_pporc_annotation(self, "rec"),
             None,
             icon="format_ppocr",
             tip=self.tr("Export Custom PPOCR Recognition Annotations"),
         )
         export_pporc_kie_annotation = action(
             self.tr("&Export PPOCR-KIE Annotations"),
-            lambda: self.export_pporc_annotation("kie"),
+            lambda: utils.export_pporc_annotation(self, "kie"),
             None,
             icon="format_ppocr",
             tip=self.tr(
                 "Export Custom PPOCR Key Information Extraction (KIE - Semantic Entity Recognition & Relation Extraction) Annotations"
             ),
+        )
+        export_vlm_r1_ovd_annotation = action(
+            self.tr("&Export VLM-R1 OVD Annotations"),
+            lambda: utils.export_vlm_r1_ovd_annotation(self),
+            None,
+            icon="format_vlm_r1_ovd",
+            tip=self.tr("Export Custom VLM-R1 OVD Annotations"),
         )
 
         # Group zoom controls into a list for easier toggling.
@@ -1260,6 +1266,7 @@ class LabelingWidget(LabelDialog):
             upload_odvg_annotation=upload_odvg_annotation,
             upload_ppocr_rec_annotation=upload_ppocr_rec_annotation,
             upload_ppocr_kie_annotation=upload_ppocr_kie_annotation,
+            upload_vlm_r1_ovd_annotation=upload_vlm_r1_ovd_annotation,
             export_yolo_hbb_annotation=export_yolo_hbb_annotation,
             export_yolo_obb_annotation=export_yolo_obb_annotation,
             export_yolo_seg_annotation=export_yolo_seg_annotation,
@@ -1276,6 +1283,7 @@ class LabelingWidget(LabelDialog):
             export_odvg_annotation=export_odvg_annotation,
             export_pporc_rec_annotation=export_pporc_rec_annotation,
             export_pporc_kie_annotation=export_pporc_kie_annotation,
+            export_vlm_r1_ovd_annotation=export_vlm_r1_ovd_annotation,
             zoom=zoom,
             zoom_in=zoom_in,
             zoom_out=zoom_out,
@@ -1298,6 +1306,7 @@ class LabelingWidget(LabelDialog):
             open_prev_image=open_prev_image,
             open_next_unchecked_image=open_next_unchecked_image,
             open_prev_unchecked_image=open_prev_unchecked_image,
+            open_chatbot=open_chatbot,
             file_menu_actions=(
                 open_,
                 openvideo,
@@ -1411,7 +1420,6 @@ class LabelingWidget(LabelDialog):
                 overview,
                 None,
                 save_crop,
-                save_mask,
                 None,
                 label_manager,
                 gid_manager,
@@ -1419,14 +1427,15 @@ class LabelingWidget(LabelDialog):
                 hbb_to_obb,
                 obb_to_hbb,
                 polygon_to_hbb,
+                polygon_to_obb,
             ),
         )
         utils.add_actions(
             self.menus.help,
             (
                 documentation,
-                contact,
-                information,
+                None,
+                about,
             ),
         )
         utils.add_actions(
@@ -1462,6 +1471,8 @@ class LabelingWidget(LabelDialog):
                 None,
                 upload_ppocr_rec_annotation,
                 upload_ppocr_kie_annotation,
+                None,
+                upload_vlm_r1_ovd_annotation,
             ),
         )
         utils.add_actions(
@@ -1488,6 +1499,8 @@ class LabelingWidget(LabelDialog):
                 None,
                 export_pporc_rec_annotation,
                 export_pporc_kie_annotation,
+                None,
+                export_vlm_r1_ovd_annotation,
             ),
         )
         utils.add_actions(
@@ -1565,6 +1578,7 @@ class LabelingWidget(LabelDialog):
             None,
             zoom,
             fit_width,
+            open_chatbot,
             toggle_auto_labeling_widget,
             run_all_images,
         )
@@ -1614,6 +1628,7 @@ class LabelingWidget(LabelDialog):
         # )
         self.auto_labeling_widget.hide()  # Hide by default
         central_layout.addWidget(self.label_instruction)
+        central_layout.addSpacing(5)
         central_layout.addWidget(self.auto_labeling_widget)
         central_layout.addWidget(scroll_area)
         layout.addItem(central_layout)
@@ -1657,7 +1672,13 @@ class LabelingWidget(LabelDialog):
         right_sidebar_layout.addWidget(self.shape_text_edit)
         right_sidebar_layout.addWidget(self.flag_dock)
         right_sidebar_layout.addWidget(self.label_dock)
-        right_sidebar_layout.addWidget(self.label_filter_combobox)
+
+        # Create a horizontal layout for the filters
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.label_filter_combobox, 90)
+        filter_layout.addWidget(self.gid_filter_combobox, 10)
+        right_sidebar_layout.addLayout(filter_layout)
+
         right_sidebar_layout.addWidget(self.shape_dock)
         right_sidebar_layout.addWidget(self.file_dock)
         self.file_dock.setFeatures(QDockWidget.DockWidgetFloatable)
@@ -1765,6 +1786,7 @@ class LabelingWidget(LabelDialog):
     def get_labeling_instruction(self):
         text_mode = self.tr("Mode:")
         text_shortcuts = self.tr("Shortcuts:")
+        text_chatbot = self.tr("Chatbot")
         text_previous = self.tr("Previous")
         text_next = self.tr("Next")
         text_rectangle = self.tr("Rectangle")
@@ -1773,6 +1795,7 @@ class LabelingWidget(LabelDialog):
         return (
             f"<b>{text_mode}</b> {self.canvas.get_mode()} | "
             f"<b>{text_shortcuts}</b>"
+            f" {text_chatbot}(<b>Ctrl+B</b>),"
             f" {text_previous}(<b>A</b>),"
             f" {text_next}(<b>D</b>),"
             f" {text_rectangle}(<b>R</b>),"
@@ -1897,12 +1920,13 @@ class LabelingWidget(LabelDialog):
         self.label_file = None
         self.other_data = {}
         self.canvas.reset_state()
-        self.label_filter_combobox.combo_box.clear()
+        self.label_filter_combobox.text_box.clear()
+        self.gid_filter_combobox.gid_box.clear()
 
     def reset_attribute(self, text):
         valid_labels = list(self.attributes.keys())
         if text not in valid_labels:
-            most_similar_label = self.find_most_similar_label(
+            most_similar_label = utils.find_most_similar_label(
                 text, valid_labels
             )
             self.error_message(
@@ -1963,43 +1987,72 @@ class LabelingWidget(LabelDialog):
         """
         Merges selected shapes into one shape.
         """
-        if len(self.canvas.selected_shapes) < 2:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please select at least two shapes to perform union."),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        # Get rectangle of all selected shapes
-        rectangle_shapes = []
+        rectangle_shapes, polygon_shapes = [], []
         for shape in self.canvas.selected_shapes:
             points = shape.points
-            # Convert QPointF objects to tuples
-            xmin, ymin = (points[0].x(), points[0].y())
-            xmax, ymax = (points[2].x(), points[2].y())
-            rectangle_shapes.append([xmin, ymin, xmax, ymax])
+            if shape.shape_type == "rectangle":
+                xmin, ymin = (points[0].x(), points[0].y())
+                xmax, ymax = (points[2].x(), points[2].y())
+                rectangle_shapes.append([xmin, ymin, xmax, ymax])
+            else:
+                polygon_shapes.append([(p.x(), p.y()) for p in points])
 
-        # Calculate the rectangle
-        min_x = min([bbox[0] for bbox in rectangle_shapes])
-        min_y = min([bbox[1] for bbox in rectangle_shapes])
-        max_x = max([bbox[2] for bbox in rectangle_shapes])
-        max_y = max([bbox[3] for bbox in rectangle_shapes])
-
-        # Create a new rectangle shape representing the union
         union_shape = shape.copy()
-        union_shape.points[0].setX(min_x)
-        union_shape.points[0].setY(min_y)
-        union_shape.points[1].setX(max_x)
-        union_shape.points[1].setY(min_y)
-        union_shape.points[2].setX(max_x)
-        union_shape.points[2].setY(max_y)
-        union_shape.points[3].setX(min_x)
-        union_shape.points[3].setY(max_y)
-        self.add_label(union_shape)
 
-        # clear selected shapes
+        if len(rectangle_shapes) > 0:
+            min_x = min([bbox[0] for bbox in rectangle_shapes])
+            min_y = min([bbox[1] for bbox in rectangle_shapes])
+            max_x = max([bbox[2] for bbox in rectangle_shapes])
+            max_y = max([bbox[3] for bbox in rectangle_shapes])
+
+            union_shape.points[0].setX(min_x)
+            union_shape.points[0].setY(min_y)
+            union_shape.points[1].setX(max_x)
+            union_shape.points[1].setY(min_y)
+            union_shape.points[2].setX(max_x)
+            union_shape.points[2].setY(max_y)
+            union_shape.points[3].setX(min_x)
+            union_shape.points[3].setY(max_y)
+        else:
+            # Create a blank mask
+            min_x = min([min(p[0] for p in poly) for poly in polygon_shapes])
+            min_y = min([min(p[1] for p in poly) for poly in polygon_shapes])
+            max_x = max([max(p[0] for p in poly) for poly in polygon_shapes])
+            max_y = max([max(p[1] for p in poly) for poly in polygon_shapes])
+
+            width = int(max_x - min_x + 10)
+            height = int(max_y - min_y + 10)
+            mask = np.zeros((height, width), dtype=np.uint8)
+
+            # Draw all polygons on the mask
+            for polygon in polygon_shapes:
+                contour = np.array(polygon, dtype=np.int32)
+                shifted_contour = contour - np.array(
+                    [min_x - 5, min_y - 5], dtype=np.int32
+                )
+                shifted_contour = shifted_contour.reshape((-1, 1, 2))
+                cv2.fillPoly(mask, [shifted_contour], 255)
+
+            # Find contours of the merged shape
+            merged_contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            if merged_contours:
+                largest_contour = max(merged_contours, key=cv2.contourArea)
+                epsilon = 0.001 * cv2.arcLength(largest_contour, True)
+                approx_contour = cv2.approxPolyDP(
+                    largest_contour, epsilon, True
+                )
+                approx_contour = approx_contour.reshape(-1, 2) + np.array(
+                    [min_x - 5, min_y - 5], dtype=np.int32
+                )
+                union_shape.points = [
+                    QtCore.QPointF(float(x), float(y))
+                    for x, y in approx_contour
+                ]
+
+        # Append merged shape and remove selected shapes
+        self.add_label(union_shape)
         self.remove_labels(self.canvas.delete_selected())
         self.set_dirty()
 
@@ -2012,135 +2065,6 @@ class LabelingWidget(LabelDialog):
     def overview(self):
         if self.filename:
             OverviewDialog(parent=self)
-
-    def save_crop(self):
-        ImageCropperDialog(
-            self.filename, self.image_list, self.output_dir, parent=self
-        )
-
-    def save_mask(self):
-        if not self.filename or not self.image_list:
-            return
-
-        default_color = QtGui.QColor(114, 114, 114)
-        color = QtWidgets.QColorDialog.getColor(
-            default_color,
-            self,
-            self.tr("Select a color to use for masking the areas"),
-        )
-        if not color.isValid():
-            return
-        else:
-            fill_color = color.getRgb()[:3]
-
-        image_file_list, label_dir_path = self.image_list, ""
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        save_path = osp.join(
-            osp.dirname(self.filename), "..", "x-anylabeling-mask-image"
-        )
-        if osp.exists(save_path):
-            shutil.rmtree(save_path)
-        os.makedirs(save_path)
-
-        progress_dialog = QProgressDialog(
-            self.tr("Processing..."),
-            self.tr("Cancel"),
-            0,
-            len(image_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-        try:
-            for i, image_file in enumerate(image_file_list):
-                image_name = osp.basename(image_file)
-                label_name = osp.splitext(image_name)[0] + ".json"
-                label_file = osp.join(label_dir_path, label_name)
-                if not osp.exists(label_file):
-                    continue
-                bk_image_file = osp.join(save_path, image_name)
-                image = cv2.imread(image_file)
-                with open(label_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                shapes = data["shapes"]
-                for shape in shapes:
-                    label = shape["label"]
-                    points = shape["points"]
-                    shape_type = shape["shape_type"]
-                    if label != "__mask__" or shape_type not in [
-                        "rectangle",
-                        "polygon",
-                        "rotation",
-                    ]:
-                        continue
-                    if (
-                        (shape_type == "polygon" and len(points) < 3)
-                        or (shape_type == "rotation" and len(points) != 4)
-                        or (shape_type == "rectangle" and len(points) != 4)
-                    ):
-                        continue
-                    points = np.array(points, dtype=np.int32)
-                    if shape["shape_type"] == "rectangle":
-                        top_left = tuple(points[0])
-                        bottom_right = tuple(points[2])
-                        cv2.rectangle(
-                            image,
-                            top_left,
-                            bottom_right,
-                            fill_color,
-                            thickness=-1,
-                        )
-                    elif shape["shape_type"] == "rotation":
-                        rect = cv2.minAreaRect(points)
-                        box = cv2.boxPoints(rect)
-                        box = np.int0(box)
-                        cv2.drawContours(
-                            image, [box], 0, fill_color, thickness=cv2.FILLED
-                        )
-                    elif shape["shape_type"] == "polygon":
-                        cv2.fillPoly(image, [points], fill_color)
-                cv2.imwrite(bk_image_file, image)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # Show success message
-            save_path = osp.realpath(save_path)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Masking completed successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while masking image.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
 
     def label_manager(self):
         modify_label_dialog = LabelModifyDialog(
@@ -2156,262 +2080,20 @@ class LabelingWidget(LabelDialog):
         if result == QtWidgets.QDialog.Accepted:
             self.load_file(self.filename)
 
-    def hbb_to_obb(self):
-        label_file_list = self.get_label_file_list()
-        if len(label_file_list) == 0:
-            return
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be changed"),
-            self.tr("You are about to start a transformation. Continue?"),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        progress_dialog = QProgressDialog(
-            self.tr("Converting..."),
-            self.tr("Cancel"),
-            0,
-            len(label_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, label_file in enumerate(label_file_list):
-                with open(label_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for j in range(len(data["shapes"])):
-                    if data["shapes"][j]["shape_type"] == "rectangle":
-                        data["shapes"][j]["shape_type"] = "rotation"
-                        data["shapes"][j]["direction"] = 0
-                with open(label_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # Reload the file after processing all label files
-            self.load_file(self.filename)
-
-        except Exception as e:
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while updating labels.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def obb_to_hbb(self):
-        label_file_list = self.get_label_file_list()
-        if len(label_file_list) == 0:
-            return
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be changed"),
-            self.tr("You are about to start a transformation. Continue?"),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        progress_dialog = QProgressDialog(
-            self.tr("Converting..."),
-            self.tr("Cancel"),
-            0,
-            len(label_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, label_file in enumerate(label_file_list):
-                with open(label_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for j in range(len(data["shapes"])):
-                    if data["shapes"][j]["shape_type"] == "rotation":
-                        del data["shapes"][j]["direction"]
-                        data["shapes"][j]["shape_type"] = "rectangle"
-                        points = np.array(data["shapes"][j]["points"])
-                        if len(points) != 4:
-                            continue
-                        xmin = int(np.min(points[:, 0]))
-                        ymin = int(np.min(points[:, 1]))
-                        xmax = int(np.max(points[:, 0]))
-                        ymax = int(np.max(points[:, 1]))
-                        data["shapes"][j]["points"] = [
-                            [xmin, ymin],
-                            [xmax, ymin],
-                            [xmax, ymax],
-                            [xmin, ymax],
-                        ]
-                with open(label_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # Reload the file after processing all label files
-            self.load_file(self.filename)
-
-        except Exception as e:
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while updating labels.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def polygon_to_hbb(self):
-        label_file_list = self.get_label_file_list()
-        if len(label_file_list) == 0:
-            return
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be changed"),
-            self.tr("You are about to start a transformation. Continue?"),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        progress_dialog = QProgressDialog(
-            self.tr("Converting..."),
-            self.tr("Cancel"),
-            0,
-            len(label_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, label_file in enumerate(label_file_list):
-                with open(label_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for j in range(len(data["shapes"])):
-                    if data["shapes"][j]["shape_type"] == "polygon":
-                        data["shapes"][j]["shape_type"] = "rectangle"
-                        points = np.array(data["shapes"][j]["points"])
-                        if len(points) < 3:
-                            continue
-                        xmin = int(np.min(points[:, 0]))
-                        ymin = int(np.min(points[:, 1]))
-                        xmax = int(np.max(points[:, 0]))
-                        ymax = int(np.max(points[:, 1]))
-                        data["shapes"][j]["points"] = [
-                            [xmin, ymin],
-                            [xmax, ymin],
-                            [xmax, ymax],
-                            [xmin, ymax],
-                        ]
-                with open(label_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # Reload the file after processing all label files
-            self.load_file(self.filename)
-
-        except Exception as e:
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while updating labels.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
+    def open_chatbot(self):
+        dialog = ChatbotDialog(self)
+        _ = dialog.exec_()
 
     # Help
     def documentation(self):
         url = (
             "https://github.com/CVHub520/X-AnyLabeling/tree/main/docs"  # NOQA
         )
-        webbrowser.open(url)
+        utils.general.open_url(url)
 
-    def contact(self):
-        url = "https://github.com/CVHub520/X-AnyLabeling/tree/main/"  # NOQA
-        webbrowser.open(url)
-
-    def information(self):
-        app_info = (
-            f"App name: {__appname__}\n"
-            f"App version: {__version__}\n"
-            f"Device: {__preferred_device__}\n"
-        )
-        system_info, pkg_info = utils.general.collect_system_info()
-        system_info_str = "\n".join(
-            [f"{key}: {value}" for key, value in system_info.items()]
-        )
-        pkg_info_str = "\n".join(
-            [f"{key}: {value}" for key, value in pkg_info.items()]
-        )
-        msg = f"{app_info}\n{system_info_str}\n\n{pkg_info_str}"
-
-        info_box = QMessageBox()
-        info_box.setIcon(QMessageBox.Information)
-        info_box.setText(msg)
-        info_box.setWindowTitle(self.tr("Information"))
-
-        copy_button = QtWidgets.QPushButton(self.tr("Copy"))
-        copy_button.clicked.connect(lambda: self.copy_to_clipboard(msg))
-        info_box.addButton(copy_button, QMessageBox.ActionRole)
-
-        info_box.exec_()
+    def about(self):
+        about_dialog = AboutDialog(self)
+        _ = about_dialog.exec_()
 
     def loop_thru_labels(self):
         self.label_loop_count += 1
@@ -2693,6 +2375,7 @@ class LabelingWidget(LabelDialog):
             item.setText(f"{shape.label} ({shape.group_id})")
         self.set_dirty()
         self.update_combo_box()
+        self.update_gid_box()
 
     def file_search_changed(self):
         self.import_image_folder(
@@ -2879,11 +2562,11 @@ class LabelingWidget(LabelDialog):
             shape.selected = False
         self.label_list.clearSelection()
         self.canvas.selected_shapes = selected_shapes
-        is_mergeable = True
+        allow_merge_shape_type = {"rectangle": 0, "polygon": 0}
         for shape in self.canvas.selected_shapes:
             shape.selected = True
-            if shape.shape_type != "rectangle":
-                is_mergeable = False
+            if shape.shape_type in ["rectangle", "polygon"]:
+                allow_merge_shape_type[shape.shape_type] += 1
             item = self.label_list.find_item_by_shape(shape)
             # NOTE: Handle the case when the shape is not found
             if item is not None:
@@ -2896,7 +2579,11 @@ class LabelingWidget(LabelDialog):
         self.actions.copy.setEnabled(n_selected)
         self.actions.edit.setEnabled(n_selected == 1)
         self.actions.union_selection.setEnabled(
-            is_mergeable and n_selected > 1
+            not all(value > 0 for value in allow_merge_shape_type.values())
+            and (
+                allow_merge_shape_type["rectangle"] > 1
+                or allow_merge_shape_type["polygon"] > 1
+            )
         )
         self.set_text_editing(True)
         if self.attributes:
@@ -2939,16 +2626,7 @@ class LabelingWidget(LabelDialog):
         label_list_item.setText("{}".format(html.escape(text)))
         label_list_item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))
         self.update_combo_box()
-
-    def shape_text_changed(self):
-        description = self.shape_text_edit.toPlainText()
-        if self.canvas.current is not None:
-            self.canvas.current.description = description
-        elif self.canvas.editing() and len(self.canvas.selected_shapes) == 1:
-            self.canvas.selected_shapes[0].description = description
-        else:
-            self.other_data["description"] = description
-        self.set_dirty()
+        self.update_gid_box()
 
     def _update_shape_color(self, shape):
         r, g, b = self._get_rgb_by_label(shape.label)
@@ -2985,6 +2663,7 @@ class LabelingWidget(LabelDialog):
             item = self.label_list.find_item_by_shape(shape)
             self.label_list.remove_item(item)
         self.update_combo_box()
+        self.update_gid_box()
 
     def load_shapes(self, shapes, replace=True, update_last_label=True):
         self._no_selection_slot = True
@@ -3014,6 +2693,20 @@ class LabelingWidget(LabelDialog):
         unique_labels_list.append("")
         unique_labels_list.sort()
         self.label_filter_combobox.update_items(unique_labels_list)
+
+    def update_gid_box(self):
+        # Get the unique group ids and add them to the Combobox.
+        gid_list = []
+        for item in self.label_list:
+            gid = item.shape().group_id
+            if gid is not None:
+                gid_list.append(str(gid))
+        unique_gid_list = list(set(gid_list))
+
+        # Add a null row for showing all the labels
+        unique_gid_list.append("-1")
+        unique_gid_list.sort()
+        self.gid_filter_combobox.update_items(unique_gid_list)
 
     def save_labels(self, filename):
         label_file = LabelFile()
@@ -3115,10 +2808,22 @@ class LabelingWidget(LabelDialog):
             ]
             self.actions.paste.setEnabled(len(self._copied_shapes) > 0)
 
-    def combo_selection_changed(self, index):
-        label = self.label_filter_combobox.combo_box.itemText(index)
+    def text_selection_changed(self, index):
+        label = self.label_filter_combobox.text_box.itemText(index)
         for item in self.label_list:
             if label in ["", item.shape().label]:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+
+    def gid_selection_changed(self, index):
+        gid = self.gid_filter_combobox.gid_box.itemText(index)
+        for item in self.label_list:
+            if item.shape().group_id is not None:
+                checked_gid = ["-1", str(item.shape().group_id)]
+            else:
+                checked_gid = ["-1"]
+            if str(gid) in checked_gid:
                 item.setCheckState(Qt.Checked)
             else:
                 item.setCheckState(Qt.Unchecked)
@@ -3137,6 +2842,7 @@ class LabelingWidget(LabelDialog):
 
     def label_item_changed(self, item):
         shape = item.shape()
+        shape.visible = item.checkState() == Qt.Checked
         self.canvas.set_shape_visible(shape, item.checkState() == Qt.Checked)
 
     def label_order_changed(self):
@@ -3532,6 +3238,7 @@ class LabelingWidget(LabelDialog):
                         **shape.flags,
                     }
             self.update_combo_box()
+            self.update_gid_box()
             self.load_shapes(self.label_file.shapes, update_last_label=False)
             if self.label_file.flags is not None:
                 flags.update(self.label_file.flags)
@@ -3592,6 +3299,12 @@ class LabelingWidget(LabelDialog):
         return True
 
     # QT Overload
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            event.accept()
+            return
+        super(LabelingWidget, self).keyPressEvent(event)
+
     def resizeEvent(self, _):
         if (
             self.canvas
@@ -3756,1818 +3469,6 @@ class LabelingWidget(LabelDialog):
 
         if self.filename and load:
             self.load_file(self.filename)
-
-    # Uplaod
-    def upload_image_flags_file(self):
-        filter = "Image Flags Files (*.txt);;All Files (*)"
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific flags file"),
-            "",
-            filter,
-        )
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                # Each line in the file is an image-level flag
-                self.image_flags = f.read().splitlines()
-                self.load_flags({k: False for k in self.image_flags})
-            self.flag_dock.show()
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Success!"))
-            msg_box.setInformativeText(self.tr("Uploading successfully!"))
-            msg_box.setWindowTitle(self.tr("Information"))
-            msg_box.exec_()
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading flags.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_label_flags_file(self):
-        filter = "Label Flags Files (*.yaml);;All Files (*)"
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific flags file"),
-            "",
-            filter,
-        )
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                # Each line in the file is an flag-level flag
-                self.label_flags = yaml.safe_load(f)
-                for label in list(self.label_flags.keys()):
-                    if not self.unique_label_list.find_items_by_label(label):
-                        item = self.unique_label_list.create_item_from_label(
-                            label
-                        )
-                        self.unique_label_list.addItem(item)
-                        rgb = self._get_rgb_by_label(label)
-                        self.unique_label_list.set_item_label(
-                            item, label, rgb, LABEL_OPACITY
-                        )
-            self.label_dialog.upload_flags(self.label_flags)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Success!"))
-            msg_box.setInformativeText(self.tr("Uploading successfully!"))
-            msg_box.setWindowTitle(self.tr("Information"))
-            msg_box.exec_()
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading flags.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_shape_attrs_file(self):
-        filter = "Attribute Files (*.json);;All Files (*)"
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific attributes file"),
-            "",
-            filter,
-        )
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                self.attributes = json.load(f)
-                for label in list(self.attributes.keys()):
-                    if not self.unique_label_list.find_items_by_label(label):
-                        item = self.unique_label_list.create_item_from_label(
-                            label
-                        )
-                        self.unique_label_list.addItem(item)
-                        rgb = self._get_rgb_by_label(label)
-                        self.unique_label_list.set_item_label(
-                            item, label, rgb, LABEL_OPACITY
-                        )
-            self.shape_attributes.show()
-            self.scroll_area.show()
-            self.canvas.h_shape_is_hovered = False
-            self.canvas.mode_changed.disconnect(self.set_edit_mode)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Success!"))
-            msg_box.setInformativeText(self.tr("Uploading successfully!"))
-            msg_box.setWindowTitle(self.tr("Information"))
-            msg_box.exec_()
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading attributes.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_yolo_annotation(  # noqa: C901
-        self, mode, _value=False, dirpath=None
-    ):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        if mode == "pose":
-            filter = "Classes Files (*.yaml);;All Files (*)"
-            self.yaml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific yolo-pose config file"),
-                "",
-                filter,
-            )
-            if not self.yaml_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific config file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            labels = []
-            with open(self.yaml_file, "r", encoding="utf-8") as f:
-                import yaml
-
-                data = yaml.safe_load(f)
-                for class_name, keypoint_name in data["classes"].items():
-                    labels.append(class_name)
-                    labels.extend(keypoint_name)
-            converter = LabelConverter(pose_cfg_file=self.yaml_file)
-        elif mode in ["hbb", "obb", "seg"]:
-            filter = "Classes Files (*.txt);;All Files (*)"
-            self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific classes file"),
-                "",
-                filter,
-            )
-            if not self.classes_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific classes file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            with open(self.classes_file, "r", encoding="utf-8") as f:
-                labels = f.read().splitlines()
-            converter = LabelConverter(classes_file=self.classes_file)
-
-        # Initialize unique labels
-        for label in labels:
-            if not self.unique_label_list.find_items_by_label(label):
-                item = self.unique_label_list.create_item_from_label(label)
-                self.unique_label_list.addItem(item)
-                rgb = self._get_rgb_by_label(label)
-                self.unique_label_list.set_item_label(
-                    item, label, rgb, LABEL_OPACITY
-                )
-
-        default_open_dir_path = dirpath if dirpath else "."
-        if self.last_open_dir and osp.exists(self.last_open_dir):
-            default_open_dir_path = self.last_open_dir
-        else:
-            default_open_dir_path = (
-                osp.dirname(self.filename) if self.filename else "."
-            )
-        image_dir_path = osp.dirname(self.filename)
-        label_dir_path = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("%s - Open Directory") % __appname__,
-            default_open_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
-        )
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be lost"),
-            self.tr(
-                "You are going to upload new annotations to this task. Continue?"
-            ),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        image_file_list = os.listdir(image_dir_path)
-        label_file_list = os.listdir(label_dir_path)
-        output_dir_path = image_dir_path
-        if self.output_dir:
-            output_dir_path = self.output_dir
-
-        progress_dialog = QProgressDialog(
-            self.tr("Uploading..."),
-            self.tr("Cancel"),
-            0,
-            len(image_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_filename in enumerate(image_file_list):
-                if image_filename.endswith(".json"):
-                    continue
-                label_filename = osp.splitext(image_filename)[0] + ".txt"
-                data_filename = osp.splitext(image_filename)[0] + ".json"
-                if label_filename not in label_file_list:
-                    continue
-                input_file = osp.join(label_dir_path, label_filename)
-                output_file = osp.join(output_dir_path, data_filename)
-                image_file = osp.join(image_dir_path, image_filename)
-                if mode in ["hbb", "seg"]:
-                    converter.yolo_to_custom(
-                        input_file=input_file,
-                        output_file=output_file,
-                        image_file=image_file,
-                        mode=mode,
-                    )
-                elif mode == "obb":
-                    converter.yolo_obb_to_custom(
-                        input_file=input_file,
-                        output_file=output_file,
-                        image_file=image_file,
-                    )
-                elif mode == "pose":
-                    converter.yolo_pose_to_custom(
-                        input_file=input_file,
-                        output_file=output_file,
-                        image_file=image_file,
-                    )
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_voc_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        default_open_dir_path = dirpath if dirpath else "."
-        if self.last_open_dir and osp.exists(self.last_open_dir):
-            default_open_dir_path = self.last_open_dir
-        else:
-            default_open_dir_path = (
-                osp.dirname(self.filename) if self.filename else "."
-            )
-        image_dir_path = osp.dirname(self.filename)
-        label_dir_path = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("%s - Open Directory") % __appname__,
-            default_open_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
-        )
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be lost"),
-            self.tr(
-                "You are going to upload new annotations to this task. Continue?"
-            ),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        converter = LabelConverter(classes_file=self.classes_file)
-        image_file_list = os.listdir(image_dir_path)
-        label_file_list = os.listdir(label_dir_path)
-        output_dir_path = image_dir_path
-        if self.output_dir:
-            output_dir_path = self.output_dir
-
-        progress_dialog = QProgressDialog(
-            self.tr("Uploading..."),
-            self.tr("Cancel"),
-            0,
-            len(image_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_filename in enumerate(image_file_list):
-                if image_filename.endswith(".json"):
-                    continue
-                label_filename = osp.splitext(image_filename)[0] + ".xml"
-                data_filename = osp.splitext(image_filename)[0] + ".json"
-                if label_filename not in label_file_list:
-                    continue
-                input_file = osp.join(label_dir_path, label_filename)
-                output_file = osp.join(output_dir_path, data_filename)
-                converter.voc_to_custom(
-                    input_file=input_file,
-                    output_file=output_file,
-                    image_filename=image_filename,
-                    mode=mode,
-                )
-
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_coco_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        filter = "Attribute Files (*.json);;All Files (*)"
-        input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a custom coco annotation file"),
-            "",
-            filter,
-        )
-
-        if (
-            not input_file
-            or QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Current annotation will be lost"),
-                self.tr(
-                    "You are going to upload new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-            != QtWidgets.QMessageBox.Ok
-        ):
-            return
-
-        image_dir_path = osp.dirname(self.filename)
-        output_dir_path = image_dir_path
-        if self.output_dir:
-            output_dir_path = self.output_dir
-
-        try:
-            converter = LabelConverter()
-            converter.coco_to_custom(
-                input_file=input_file,
-                output_dir_path=output_dir_path,
-                mode=mode,
-            )
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_dota_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        default_open_dir_path = dirpath if dirpath else "."
-        if self.last_open_dir and osp.exists(self.last_open_dir):
-            default_open_dir_path = self.last_open_dir
-        else:
-            default_open_dir_path = (
-                osp.dirname(self.filename) if self.filename else "."
-            )
-        image_dir_path = osp.dirname(self.filename)
-        label_dir_path = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("%s - Open Directory") % __appname__,
-            default_open_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
-        )
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be lost"),
-            self.tr(
-                "You are going to upload new annotations to this task. Continue?"
-            ),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        converter = LabelConverter()
-        image_file_list = os.listdir(image_dir_path)
-        label_file_list = os.listdir(label_dir_path)
-        output_dir_path = image_dir_path
-        if self.output_dir:
-            output_dir_path = self.output_dir
-
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(image_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_filename in enumerate(image_file_list):
-                if image_filename.endswith(".json"):
-                    continue
-                label_filename = osp.splitext(image_filename)[0] + ".txt"
-                data_filename = osp.splitext(image_filename)[0] + ".json"
-                if label_filename not in label_file_list:
-                    continue
-                input_file = osp.join(label_dir_path, label_filename)
-                output_file = osp.join(output_dir_path, data_filename)
-                image_file = osp.join(image_dir_path, image_filename)
-                converter.dota_to_custom(
-                    input_file=input_file,
-                    output_file=output_file,
-                    image_file=image_file,
-                )
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_mask_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        filter = "JSON Files (*.json);;All Files (*)"
-        color_map_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific color_map file"),
-            "",
-            filter,
-        )
-        if not color_map_file:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please select a specific color_map file!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-        with open(color_map_file, "r", encoding="utf-8") as f:
-            mapping_table = json.load(f)
-            classes = list(mapping_table["colors"].keys())
-            for label in classes:
-                if not self.unique_label_list.find_items_by_label(label):
-                    item = self.unique_label_list.create_item_from_label(label)
-                    self.unique_label_list.addItem(item)
-                    rgb = self._get_rgb_by_label(label)
-                    self.unique_label_list.set_item_label(
-                        item, label, rgb, LABEL_OPACITY
-                    )
-
-        default_open_dir_path = dirpath if dirpath else "."
-        if self.last_open_dir and osp.exists(self.last_open_dir):
-            default_open_dir_path = self.last_open_dir
-        else:
-            default_open_dir_path = (
-                osp.dirname(self.filename) if self.filename else "."
-            )
-        image_dir_path = osp.dirname(self.filename)
-        label_dir_path = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("%s - Open Directory") % __appname__,
-            default_open_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
-        )
-
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Current annotation will be lost"),
-            self.tr(
-                "You are going to upload new annotations to this task. Continue?"
-            ),
-            QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-        )
-
-        if response != QtWidgets.QMessageBox.Ok:
-            return
-
-        converter = LabelConverter()
-        image_file_list = os.listdir(image_dir_path)
-        label_file_list = os.listdir(label_dir_path)
-        output_dir_path = image_dir_path
-        if self.output_dir:
-            output_dir_path = self.output_dir
-
-        progress_dialog = QProgressDialog(
-            self.tr("Uploading..."),
-            self.tr("Cancel"),
-            0,
-            len(image_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_filename in enumerate(image_file_list):
-                if image_filename.endswith(".json"):
-                    continue
-                label_filename = osp.splitext(image_filename)[0] + ".png"
-                data_filename = osp.splitext(image_filename)[0] + ".json"
-                if label_filename not in label_file_list:
-                    continue
-                input_file = osp.join(label_dir_path, label_filename)
-                output_file = osp.join(output_dir_path, data_filename)
-                image_file = osp.join(image_dir_path, image_filename)
-                converter.mask_to_custom(
-                    input_file=input_file,
-                    output_file=output_file,
-                    image_file=image_file,
-                    mapping_table=mapping_table,
-                )
-
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_mot_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            return
-
-        filter = "Classes Files (*.txt);;All Files (*)"
-        self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific classes file"),
-            "",
-            filter,
-        )
-        if not self.classes_file:
-            return
-        with open(self.classes_file, "r", encoding="utf-8") as f:
-            labels = f.read().splitlines()
-            for label in labels:
-                if not self.unique_label_list.find_items_by_label(label):
-                    item = self.unique_label_list.create_item_from_label(label)
-                    self.unique_label_list.addItem(item)
-                    rgb = self._get_rgb_by_label(label)
-                    self.unique_label_list.set_item_label(
-                        item, label, rgb, LABEL_OPACITY
-                    )
-
-        filter = "Attribute Files (*.txt);;All Files (*)"
-        input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a custom mot annotation file (gt.txt)"),
-            "",
-            filter,
-        )
-
-        if (
-            not input_file
-            or QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Current annotation will be lost"),
-                self.tr(
-                    "You are going to upload new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-            != QtWidgets.QMessageBox.Ok
-        ):
-            return
-
-        try:
-            image_dir_path = osp.dirname(self.filename)
-            output_dir_path = image_dir_path
-            if self.output_dir:
-                output_dir_path = self.output_dir
-            converter = LabelConverter(classes_file=self.classes_file)
-            converter.mot_to_custom(
-                input_file=input_file,
-                output_path=output_dir_path,
-                image_path=image_dir_path,
-            )
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_odvg_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            return
-
-        filter = "OD Files (*.json *.jsonl);;All Files (*)"
-        input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific OD file"),
-            "",
-            filter,
-        )
-
-        if (
-            not input_file
-            or QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Current annotation will be lost"),
-                self.tr(
-                    "You are going to upload new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-            != QtWidgets.QMessageBox.Ok
-        ):
-            return
-
-        try:
-            output_dir_path = osp.dirname(self.filename)
-            if self.output_dir:
-                output_dir_path = self.output_dir
-            converter = LabelConverter()
-            converter.odvg_to_custom(
-                input_file=input_file,
-                output_path=output_dir_path,
-            )
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def upload_ppocr_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        if mode == "rec":
-            filter = "Attribute Files (*.txt);;All Files (*)"
-            input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a custom annotation file (Label.txt)"),
-                "",
-                filter,
-            )
-        elif mode == "kie":
-            filter = "Attribute Files (*.json);;All Files (*)"
-            input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a custom annotation file (ppocr_kie.json)"),
-                "",
-                filter,
-            )
-
-        if (
-            not input_file
-            or QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Current annotation will be lost"),
-                self.tr(
-                    "You are going to upload new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-            != QtWidgets.QMessageBox.Ok
-        ):
-            return
-
-        try:
-            image_dir_path = osp.dirname(self.filename)
-            output_dir_path = image_dir_path
-            if self.output_dir:
-                output_dir_path = self.output_dir
-            converter = LabelConverter(classes_file=self.classes_file)
-            converter.ppocr_to_custom(
-                input_file=input_file,
-                output_path=output_dir_path,
-                image_path=image_dir_path,
-                mode=mode,
-            )
-            # update and refresh the current canvas
-            self.load_file(self.filename)
-        except Exception as e:
-            logger.error(f"Error occurred while uploading annotations: {e}")
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while uploading annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    # Export
-    def export_yolo_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        # Handle config/classes file selection based on mode
-        if mode == "pose":
-            filter = "Classes Files (*.yaml);;All Files (*)"
-            self.yaml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific yolo-pose config file"),
-                "",
-                filter,
-            )
-            if not self.yaml_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific config file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            converter = LabelConverter(pose_cfg_file=self.yaml_file)
-        elif mode in ["hbb", "obb", "seg"]:
-            filter = "Classes Files (*.txt);;All Files (*)"
-            self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific classes file"),
-                "",
-                filter,
-            )
-            if not self.classes_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific classes file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            converter = LabelConverter(classes_file=self.classes_file)
-
-        # Create options dialog with additional export path selection
-        dialog = QtWidgets.QDialog()
-        dialog.setWindowTitle(self.tr("Export Options"))
-        layout = QVBoxLayout()
-
-        # Add export path selection
-        path_layout = QHBoxLayout()
-        path_label = QtWidgets.QLabel(self.tr("Export Path:"))
-        path_edit = QtWidgets.QLineEdit()
-        path_button = QtWidgets.QPushButton(self.tr("Browse"))
-
-        # Set default path
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        default_save_path = osp.realpath(
-            osp.join(label_dir_path, "..", "labels")
-        )
-        path_edit.setText(default_save_path)
-
-        def browse_export_path():
-            path = QtWidgets.QFileDialog.getExistingDirectory(
-                self,
-                self.tr("Select Export Directory"),
-                path_edit.text(),
-            )
-            if path:
-                path_edit.setText(path)
-
-        path_button.clicked.connect(browse_export_path)
-        path_layout.addWidget(path_label)
-        path_layout.addWidget(path_edit)
-        path_layout.addWidget(path_button)
-        layout.addLayout(path_layout)
-
-        # Add other options
-        save_images_checkbox = QtWidgets.QCheckBox(self.tr("Save images?"))
-        save_images_checkbox.setChecked(False)
-        layout.addWidget(save_images_checkbox)
-
-        skip_empty_files_checkbox = QtWidgets.QCheckBox(
-            self.tr("Skip empty labels?")
-        )
-        skip_empty_files_checkbox.setChecked(False)
-        layout.addWidget(skip_empty_files_checkbox)
-
-        button_box = QtWidgets.QPushButton(self.tr("OK"))
-        button_box.clicked.connect(dialog.accept)
-        layout.addWidget(button_box)
-
-        dialog.setLayout(layout)
-        result = dialog.exec_()
-
-        if not result:
-            return
-
-        save_images = save_images_checkbox.isChecked()
-        skip_empty_files = skip_empty_files_checkbox.isChecked()
-        save_path = path_edit.text()
-
-        # Check if export directory exists and handle overwrite
-        if osp.exists(save_path):
-            response = QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Output Directory Exists!"),
-                self.tr(
-                    "Directory already exists. Choose an action:\n"
-                    "Yes - Merge with existing files\n"
-                    "No - Delete existing directory\n"
-                    "Cancel - Abort export"
-                ),
-                QtWidgets.QMessageBox.Yes
-                | QtWidgets.QMessageBox.No
-                | QtWidgets.QMessageBox.Cancel,
-            )
-
-            if response == QtWidgets.QMessageBox.Cancel:
-                return
-            elif response == QtWidgets.QMessageBox.No:
-                shutil.rmtree(save_path)
-                os.makedirs(save_path)
-        else:
-            os.makedirs(save_path)
-
-        # Setup progress dialog
-        image_list = self.image_list if self.image_list else [self.filename]
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(image_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-            QProgressDialog QProgressBar {
-                border: 1px solid grey;
-                border-radius: 5px;
-                text-align: center;
-            }
-            QProgressDialog QProgressBar::chunk {
-                background-color: orange;
-            }
-            """
-        )
-
-        try:
-            # Process files
-            for i, image_file in enumerate(image_list):
-                image_file_name = osp.basename(image_file)
-                label_file_name = osp.splitext(image_file_name)[0] + ".json"
-                dst_file_name = osp.splitext(image_file_name)[0] + ".txt"
-                dst_file = osp.join(save_path, dst_file_name)
-                src_file = osp.join(label_dir_path, label_file_name)
-
-                is_empty_file = converter.custom_to_yolo(
-                    src_file, dst_file, mode, skip_empty_files
-                )
-
-                if save_images and not (skip_empty_files and is_empty_file):
-                    image_dst = osp.join(save_path, image_file_name)
-                    shutil.copy(image_file, image_dst)
-
-                if skip_empty_files and is_empty_file and osp.exists(dst_file):
-                    os.remove(dst_file)
-
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-
-            progress_dialog.close()
-
-            # Show success message
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Exporting annotations successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while exporting annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def export_voc_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        dialog = QtWidgets.QDialog()
-        dialog.setWindowTitle(self.tr("Options"))
-
-        layout = QVBoxLayout()
-
-        save_images_checkbox = QtWidgets.QCheckBox(self.tr("Save images?"))
-        save_images_checkbox.setChecked(False)
-        layout.addWidget(save_images_checkbox)
-
-        skip_empty_files_checkbox = QtWidgets.QCheckBox(
-            self.tr("Skip empty labels?")
-        )
-        skip_empty_files_checkbox.setChecked(False)
-        layout.addWidget(skip_empty_files_checkbox)
-
-        button_box = QtWidgets.QPushButton(self.tr("OK"))
-        button_box.clicked.connect(dialog.accept)
-        layout.addWidget(button_box)
-
-        dialog.setLayout(layout)
-        dialog.exec_()
-
-        save_images = save_images_checkbox.isChecked()
-        skip_empty_files = skip_empty_files_checkbox.isChecked()
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        image_list = self.image_list
-        if not image_list:
-            image_list = [self.filename]
-        save_path = osp.realpath(osp.join(label_dir_path, "..", "Annotations"))
-
-        if osp.exists(save_path):
-            response = QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Output Directory Exist!"),
-                self.tr(
-                    "You are going to export new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-
-            if response != QtWidgets.QMessageBox.Ok:
-                return
-            else:
-                shutil.rmtree(save_path)
-        os.makedirs(save_path, exist_ok=True)
-
-        converter = LabelConverter()
-        label_file_list = os.listdir(label_dir_path)
-
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(label_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_file in enumerate(image_list):
-                image_file_name = osp.basename(image_file)
-                label_file_name = osp.splitext(image_file_name)[0] + ".json"
-                dst_file_name = osp.splitext(image_file_name)[0] + ".xml"
-                src_file = osp.join(label_dir_path, label_file_name)
-                dst_file = osp.join(save_path, dst_file_name)
-                is_emtpy_file = converter.custom_to_voc(
-                    image_file, src_file, dst_file, mode, skip_empty_files
-                )
-                if save_images and not (skip_empty_files and is_emtpy_file):
-                    image_dst = osp.join(save_path, image_file_name)
-                    shutil.copyfile(image_file, image_dst)
-                if skip_empty_files and is_emtpy_file and osp.exists(dst_file):
-                    os.remove(dst_file)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-
-            # # Show success message
-            save_path = osp.realpath(save_path)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Exporting annotations successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while exporting annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def export_coco_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        if mode == "pose":
-            filter = "Classes Files (*.yaml);;All Files (*)"
-            self.yaml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific coco-pose config file"),
-                "",
-                filter,
-            )
-            if not self.yaml_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific config file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            converter = LabelConverter(pose_cfg_file=self.yaml_file)
-        elif mode in ["rectangle", "polygon"]:
-            filter = "Classes Files (*.txt);;All Files (*)"
-            self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific classes file"),
-                "",
-                filter,
-            )
-            if not self.classes_file:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Warning"),
-                    self.tr("Please select a specific classes file!"),
-                    QtWidgets.QMessageBox.Ok,
-                )
-                return
-            converter = LabelConverter(classes_file=self.classes_file)
-
-        image_list = self.image_list
-        if not image_list:
-            image_list = [self.filename]
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        save_path = osp.realpath(osp.join(label_dir_path, "..", "annotations"))
-        os.makedirs(save_path, exist_ok=True)
-
-        try:
-            converter.custom_to_coco(
-                image_list, label_dir_path, save_path, mode
-            )
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Success"),
-                self.tr(
-                    f"Annotation exported successfully!\n"
-                    f"Check the results in: {save_path}."
-                ),
-                QtWidgets.QMessageBox.Ok,
-            )
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Error"),
-                self.tr(f"{e}"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-    def export_dota_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        image_list = self.image_list
-        if not image_list:
-            image_list = [self.filename]
-        save_path = osp.realpath(osp.join(label_dir_path, "..", "labelTxt"))
-        os.makedirs(save_path, exist_ok=True)
-        converter = LabelConverter(classes_file=self.classes_file)
-        label_file_list = os.listdir(label_dir_path)
-
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(image_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_file in enumerate(image_list):
-                image_file_name = osp.basename(image_file)
-                label_file_name = osp.splitext(image_file_name)[0] + ".json"
-                dst_file_name = osp.splitext(image_file_name)[0] + ".txt"
-                dst_file = osp.join(save_path, dst_file_name)
-                if label_file_name not in label_file_list:
-                    pathlib.Path(dst_file).touch()
-                else:
-                    src_file = osp.join(label_dir_path, label_file_name)
-                    converter.custom_to_dota(src_file, dst_file)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-
-            # # Show success message
-            save_path = osp.realpath(save_path)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Exporting annotations successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while exporting annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def export_mask_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        filter = "JSON Files (*.json);;All Files (*)"
-        color_map_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific color_map file"),
-            "",
-            filter,
-        )
-        if not color_map_file:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please select a specific color_map file!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        with open(color_map_file, "r", encoding="utf-8") as f:
-            mapping_table = json.load(f)
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select a directory to save the mask annotations"),
-            label_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly,
-        )
-
-        if not selected_dir:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("No directory selected! Operation cancelled."),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-        save_path = osp.realpath(selected_dir)
-        converter = LabelConverter(classes_file=self.classes_file)
-        label_file_list = os.listdir(label_dir_path)
-
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(label_file_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, src_file_name in enumerate(label_file_list):
-                if not src_file_name.endswith(".json"):
-                    continue
-                dst_file_name = osp.splitext(src_file_name)[0] + ".png"
-                src_file = osp.join(label_dir_path, src_file_name)
-                dst_file = osp.join(save_path, dst_file_name)
-                converter.custom_to_mask(src_file, dst_file, mapping_table)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-
-            # # Show success message
-            save_path = osp.realpath(save_path)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Exporting annotations successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while exporting annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
-
-    def export_mot_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        if not self.classes_file:
-            filter = "Classes Files (*.txt);;All Files (*)"
-            self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific classes file"),
-                "",
-                filter,
-            )
-            if not self.classes_file:
-                return
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-
-        selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select a directory to save the mot annotations"),
-            label_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly,
-        )
-
-        if not selected_dir:
-            return
-
-        save_path = osp.realpath(selected_dir)
-        os.makedirs(save_path, exist_ok=True)
-        converter = LabelConverter(classes_file=self.classes_file)
-        try:
-            converter.custom_to_mot(label_dir_path, save_path)
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Success"),
-                self.tr(
-                    f"Annotation exported successfully!\n"
-                    f"Check the results in: {save_path}."
-                ),
-                QtWidgets.QMessageBox.Ok,
-            )
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Error"),
-                self.tr(f"{e}"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-    def export_mots_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        filter = "Classes Files (*.txt);;All Files (*)"
-        self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific classes file"),
-            "",
-            filter,
-        )
-        if not self.classes_file:
-            return
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-
-        selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select a directory to save the mots annotations"),
-            label_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly,
-        )
-
-        if not selected_dir:
-            return
-
-        save_path = osp.realpath(osp.join(selected_dir, "gt"))
-        os.makedirs(save_path, exist_ok=True)
-        converter = LabelConverter(classes_file=self.classes_file)
-        try:
-            converter.custom_to_mots(label_dir_path, save_path)
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Success"),
-                self.tr(
-                    f"Annotation exported successfully!\n"
-                    f"Check the results in: {save_path}."
-                ),
-                QtWidgets.QMessageBox.Ok,
-            )
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Error"),
-                self.tr(f"{e}"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-    def export_odvg_annotation(self, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        if not self.classes_file:
-            filter = "Classes Files (*.txt);;All Files (*)"
-            self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Select a specific classes file"),
-                "",
-                filter,
-            )
-            if not self.classes_file:
-                return
-
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-
-        selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select a directory to save the odvg annotations"),
-            label_dir_path,
-            QtWidgets.QFileDialog.ShowDirsOnly,
-        )
-        if not selected_dir:
-            return
-
-        save_path = osp.realpath(selected_dir)
-        image_list = self.image_list
-        if not image_list:
-            image_list = [self.filename]
-        os.makedirs(save_path, exist_ok=True)
-        converter = LabelConverter(classes_file=self.classes_file)
-        try:
-            converter.custom_to_odvg(image_list, label_dir_path, save_path)
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Success"),
-                self.tr(
-                    f"Annotation exported successfully!\n"
-                    f"Check the results in: {save_path}."
-                ),
-                QtWidgets.QMessageBox.Ok,
-            )
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Error"),
-                self.tr(f"{e}"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-    def export_pporc_annotation(self, mode, _value=False, dirpath=None):
-        if not self.may_continue():
-            return
-
-        if not self.filename:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr("Please load an image folder before proceeding!"),
-                QtWidgets.QMessageBox.Ok,
-            )
-            return
-
-        converter = LabelConverter(classes_file=self.classes_file)
-        label_dir_path = osp.dirname(self.filename)
-        if self.output_dir:
-            label_dir_path = self.output_dir
-        image_list = self.image_list
-        if not image_list:
-            image_list = [self.filename]
-        save_path = osp.realpath(
-            osp.join(label_dir_path, "..", f"ppocr-{mode}")
-        )
-
-        if osp.exists(save_path):
-            response = QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Output Directory Exist!"),
-                self.tr(
-                    "You are going to export new annotations to this task. Continue?"
-                ),
-                QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok,
-            )
-
-            if response != QtWidgets.QMessageBox.Ok:
-                return
-            else:
-                shutil.rmtree(save_path)
-        os.makedirs(save_path, exist_ok=True)
-        if mode == "rec":
-            save_crop_img_path = osp.join(save_path, "crop_img")
-            if osp.exists(save_crop_img_path):
-                shutil.rmtree(save_crop_img_path)
-            os.makedirs(save_crop_img_path, exist_ok=True)
-        elif mode == "kie":
-            total_class_set = set()
-            class_list_file = osp.join(save_path, "class_list.txt")
-
-        progress_dialog = QProgressDialog(
-            self.tr("Exporting..."),
-            self.tr("Cancel"),
-            0,
-            len(image_list),
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-
-        try:
-            for i, image_file in enumerate(image_list):
-                image_file_name = osp.basename(image_file)
-                label_file_name = osp.splitext(image_file_name)[0] + ".json"
-                label_file = osp.join(label_dir_path, label_file_name)
-                if mode == "rec":
-                    converter.custom_to_ppocr(
-                        image_file, label_file, save_path, mode
-                    )
-                elif mode == "kie":
-                    class_set = converter.custom_to_ppocr(
-                        image_file, label_file, save_path, mode
-                    )
-                    total_class_set = total_class_set.union(class_set)
-                # Update progress bar
-                progress_dialog.setValue(i)
-                if progress_dialog.wasCanceled():
-                    break
-
-            if mode == "kie":
-                with open(class_list_file, "w") as f:
-                    for c in total_class_set:
-                        f.writelines(f"{c.upper()}\n")
-
-            # Hide the progress dialog after processing is done
-            progress_dialog.close()
-
-            # # Show success message
-            save_path = osp.realpath(save_path)
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Information)
-            msg_box.setText(self.tr("Exporting annotations successfully!"))
-            msg_box.setInformativeText(
-                self.tr(f"Results have been saved to:\n{save_path}")
-            )
-            msg_box.setWindowTitle(self.tr("Success"))
-            msg_box.exec_()
-
-        except Exception as e:
-            logger.error(f"Error occurred while exporting annotations: {e}")
-            progress_dialog.close()
-            error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(
-                self.tr("Error occurred while exporting annotations.")
-            )
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle(self.tr("Error"))
-            error_dialog.exec_()
 
     # File
     def open_file(self, _value=False):
@@ -5764,6 +3665,8 @@ class LabelingWidget(LabelDialog):
                 label_dir_path = self.output_dir
             label_name = osp.splitext(image_name)[0] + ".json"
             label_file = osp.join(label_dir_path, label_name)
+            if not osp.exists(label_file):
+                label_file = osp.join(osp.dirname(image_file), label_name)
             if osp.exists(label_file):
                 os.remove(label_file)
                 logger.info(f"Label file is removed: {image_file}")
@@ -5835,290 +3738,10 @@ class LabelingWidget(LabelDialog):
         return osp.dirname(str(self.filename)) if self.filename else "."
 
     def toggle_visibility_shapes(self, value):
-        for item in self.label_list:
+        for index, item in enumerate(self.label_list):
             item.setCheckState(Qt.Checked if value else Qt.Unchecked)
+            self.label_list[index].shape().visible = True if value else False
         self._config["show_shapes"] = value
-
-    def run_all_images(self):
-        if len(self.image_list) <= 0:
-            return
-
-        if self.auto_labeling_widget.model_manager.loaded_model_config is None:
-            self.auto_labeling_widget.model_manager.new_model_status.emit(
-                self.tr("Model is not loaded. Choose a mode to continue.")
-            )
-            return
-
-        marks_model_list = [
-            "segment_anything",
-            "segment_anything_2",
-            "sam_med2d",
-            "sam_hq",
-            "efficientvit_sam",
-            "edge_sam",
-            "open_vision",
-        ]
-
-        if (
-            self.auto_labeling_widget.model_manager.loaded_model_config["type"]
-            in marks_model_list
-        ):
-            logger.warning(
-                f"The model `{self.auto_labeling_widget.model_manager.loaded_model_config['type']}`"
-                f" is not supported for this action."
-                f" Please choose a valid model to execute."
-            )
-            self.auto_labeling_widget.model_manager.new_model_status.emit(
-                self.tr(
-                    "Invalid model type, please choose a valid model_type to run."
-                )
-            )
-            return
-
-        reply = QMessageBox.question(
-            self,
-            self.tr("Confirmation"),
-            self.tr("Do you want to process all images?"),
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            logger.info("Start running all images...")
-            self.current_index = self.fn_to_index[str(self.filename)]
-            self.image_index = self.current_index
-            self.text_prompt = ""
-            self.run_tracker = False
-            if self.auto_labeling_widget.model_manager.loaded_model_config[
-                "type"
-            ] in [
-                "grounding_dino",
-                "grounding_sam",
-                "grounding_sam2",
-            ]:
-                text_input_dialog = TextInputDialog(parent=self)
-                self.text_prompt = text_input_dialog.get_input_text()
-                if self.text_prompt:
-                    self.show_progress_dialog_and_process()
-            elif self.auto_labeling_widget.model_manager.loaded_model_config[
-                "type"
-            ] in [
-                "segment_anything_2_video",
-            ]:
-                self.run_tracker = True
-                self.show_progress_dialog_and_process()
-            else:
-                self.show_progress_dialog_and_process()
-
-    def show_progress_dialog_and_process(self):
-        self.cancel_processing = False
-        progress_dialog = QProgressDialog(
-            self.tr("Inferencing..."),
-            self.tr("Cancel"),
-            self.image_index,
-            len(self.image_list),
-            self,
-        )
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setWindowTitle(self.tr("Progress"))
-        progress_dialog.setStyleSheet(
-            """
-        QProgressDialog QProgressBar {
-            border: 1px solid grey;
-            border-radius: 5px;
-            text-align: center;
-        }
-        QProgressDialog QProgressBar::chunk {
-            background-color: orange;
-        }
-        """
-        )
-        progress_dialog.canceled.connect(self.cancel_operation)
-        self.process_next_image(progress_dialog)
-
-    def batch_load_file(self, filename=None) -> None:
-        """Load file for batch processing in run_all_images task.
-        
-        This is a specialized version of load_file() that skips UI updates
-        and other interactive features when processing multiple images in batch.
-        
-        Args:
-            filename: Path to the image file to load. If None, loads the last opened file.
-        
-        Note:
-            This method is not suitable for interactive labeling tasks.
-        """
-
-        self.reset_state()
-        self.canvas.setEnabled(False)
-
-        label_file = osp.splitext(filename)[0] + ".json"
-        image_dir = None
-        if self.output_dir:
-            image_dir = osp.dirname(filename)
-            label_file_without_path = osp.basename(label_file)
-            label_file = self.output_dir + "/" + label_file_without_path
-
-        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
-            label_file
-        ):
-            try:
-                self.label_file = LabelFile(label_file, image_dir)
-            except LabelFileError as e:
-                self.error_message(
-                    self.tr("Error opening file"),
-                    self.tr(
-                        "<p><b>%s</b></p>"
-                        "<p>Make sure <i>%s</i> is a valid label file."
-                    )
-                    % (e, label_file),
-                )
-                self.status(self.tr("Error reading %s") % label_file)
-                return False
-            self.image_data = self.label_file.image_data
-            self.image_path = osp.join(
-                osp.dirname(label_file),
-                self.label_file.image_path,
-            )
-            self.other_data = self.label_file.other_data
-            self.shape_text_edit.textChanged.disconnect()
-            self.shape_text_edit.setPlainText(
-                self.other_data.get("description", "")
-            )
-            self.shape_text_edit.textChanged.connect(self.shape_text_changed)
-        else:
-            self.image_data = LabelFile.load_image_file(filename)
-            if self.image_data:
-                self.image_path = filename
-            self.label_file = None
-
-        # TODO(jack): icc profile issue warning
-        # - qt.gui.icc: fromIccProfile: failed minimal tag size sanity
-        # - qt.gui.icc: fromIccProfile: invalid tag offset alignment
-        image = QtGui.QImage.fromData(self.image_data)
-        if image.isNull():
-            formats = [
-                f"*.{fmt.data().decode()}"
-                for fmt in QtGui.QImageReader.supportedImageFormats()
-            ]
-            self.error_message(
-                self.tr("Error opening file"),
-                self.tr(
-                    "<p>Make sure <i>{0}</i> is a valid image file.<br/>"
-                    "Supported image formats: {1}</p>"
-                ).format(filename, ",".join(formats)),
-            )
-            self.status(self.tr("Error reading %s") % filename)
-            return False
-        self.image = image
-        self.filename = filename
-        if self._config["keep_prev"]:
-            prev_shapes = self.canvas.shapes
-        self.canvas.load_pixmap(QtGui.QPixmap.fromImage(image))
-        flags = {k: False for k in self.image_flags or []}
-        if self.label_file:
-            for shape in self.label_file.shapes:
-                default_flags = {}
-                if self._config["label_flags"]:
-                    for pattern, keys in self._config["label_flags"].items():
-                        if re.match(pattern, shape.label):
-                            for key in keys:
-                                default_flags[key] = False
-                    shape.flags = {
-                        **default_flags,
-                        **shape.flags,
-                    }
-            self.update_combo_box()
-            self.load_shapes(self.label_file.shapes, update_last_label=False)
-            if self.label_file.flags is not None:
-                flags.update(self.label_file.flags)
-        self.load_flags(flags)
-        if self._config["keep_prev"] and self.no_shape():
-            self.load_shapes(
-                prev_shapes, replace=False, update_last_label=False
-            )
-            self.set_dirty()
-        else:
-            self.set_clean()
-        self.canvas.setEnabled(True)
-
-        self.paint_canvas()
-        self.toggle_actions(True)
-
-        return True
-
-    def process_next_image(self, progress_dialog):
-        total_images = len(self.image_list)
-
-        if (self.image_index < total_images) and (not self.cancel_processing):
-            filename = self.image_list[self.image_index]
-            self.filename = filename
-            self.batch_load_file(self.filename)
-
-            if self.text_prompt:
-                self.auto_labeling_widget.model_manager.predict_shapes(
-                    self.image, self.filename, text_prompt=self.text_prompt
-                )
-            elif self.run_tracker:
-                self.auto_labeling_widget.model_manager.predict_shapes(
-                    self.image, self.filename, run_tracker=self.run_tracker
-                )
-            else:
-                self.auto_labeling_widget.model_manager.predict_shapes(
-                    self.image, self.filename
-                )
-
-            # Enable painting for tracking models and time-consuming models
-            model_type = self.auto_labeling_widget.model_manager.loaded_model_config["type"]
-            is_painting = model_type in [
-                "segment_anything_2_video",
-                "grounding_dino",
-                "grounding_sam",
-                "grounding_sam2",
-                "yolov8_det_track",
-                "yolov8_seg_track",
-                "yolov8_obb_track",
-                "yolov8_pose_track",
-                "yolo11_det_track",
-                "yolo11_seg_track",
-                "yolo11_obb_track",
-                "yolo11_pose_track",
-            ]
-
-            # Update the progress dialog
-            if total_images <= 100:
-                update_flag = True
-            else:
-                update_interval = max(1, total_images // 100)
-                update_flag = self.image_index % update_interval == 0
-            # Ensure more frequent updates near the start and end
-            if self.image_index < 10 or self.image_index >= total_images - 10:
-                update_flag = True
-            if update_flag:
-                progress_dialog.setValue(self.image_index)
-
-            self.image_index += 1
-            if not self.cancel_processing:
-                delay_ms = 1
-                self.canvas.is_painting = is_painting
-                QtCore.QTimer.singleShot(
-                    delay_ms, lambda: self.process_next_image(progress_dialog)
-                )
-            else:
-                self.canvas.is_painting = is_painting
-        else:
-            self.finish_processing(progress_dialog)
-            self.canvas.is_painting = True
-
-    def cancel_operation(self):
-        self.cancel_processing = True
-
-    def finish_processing(self, progress_dialog):
-        self.filename = self.image_list[self.current_index]
-        self.load_file(self.filename)
-        del self.text_prompt
-        del self.run_tracker
-        del self.image_index
-        del self.current_index
-        progress_dialog.close()
 
     def remove_selected_point(self):
         self.canvas.remove_selected_point()
@@ -6148,43 +3771,6 @@ class LabelingWidget(LabelDialog):
     def move_shape(self):
         self.canvas.end_move(copy=False)
         self.set_dirty()
-
-    def open_video_file(self, _value=False):
-        if not self.may_continue():
-            return
-        default_open_video_path = (
-            osp.dirname(str(self.filename)) if self.filename else "."
-        )
-        supportedVideoFormats = (
-            "*.asf *.avi *.m4v *.mkv *.mov *.mp4 *.mpeg *.mpg *.ts *.wmv"
-        )
-        source_video_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("%s - Open Video file") % __appname__,
-            default_open_video_path,
-            supportedVideoFormats,
-        )
-
-        # Check if the path contains Chinese characters
-        if utils.is_chinese(source_video_path):
-            QMessageBox.warning(
-                self,
-                self.tr("Warning"),
-                self.tr(
-                    "File path contains Chinese characters, invalid path!"
-                ),
-                QMessageBox.Ok,
-            )
-            return
-
-        if osp.exists(source_video_path):
-            target_dir_path = utils.extract_frames_from_video(
-                self, source_video_path
-            )
-            logger.info(
-                f"🔍 Frames have been successfully extracted to {target_dir_path}"
-            )
-            self.import_image_folder(target_dir_path)
 
     def open_folder_dialog(self, _value=False, dirpath=None):
         if not self.may_continue():
@@ -6263,7 +3849,7 @@ class LabelingWidget(LabelDialog):
         self.last_open_dir = dirpath
         self.filename = None
         self.file_list_widget.clear()
-        for filename in self.scan_all_images(dirpath):
+        for filename in utils.scan_all_images(dirpath):
             if pattern and pattern not in filename:
                 continue
             label_file = osp.splitext(filename)[0] + ".json"
@@ -6282,34 +3868,6 @@ class LabelingWidget(LabelDialog):
             self.fn_to_index[filename] = self.file_list_widget.count() - 1
             utils.process_image_exif(filename)
         self.open_next_image(load=load)
-
-    def scan_all_images(self, folder_path):
-        try:
-            extensions = [
-                f".{fmt.data().decode().lower()}"
-                for fmt in QtGui.QImageReader.supportedImageFormats()
-            ]
-
-            images = []
-            folder_path = osp.normpath(osp.abspath(folder_path))
-
-            for root, _, files in os.walk(folder_path):
-                for file in files:
-                    if file.lower().endswith(tuple(extensions)):
-                        relative_path = osp.normpath(osp.join(root, file))
-                        relative_path = str(relative_path)
-                        images.append(relative_path)
-
-            try:
-                return natsort.os_sorted(images)
-            except (OSError, ValueError) as e:
-                logger.warning(
-                    f"Warning: Natural sort failed, falling back to regular sort: {e}"
-                )
-                return sorted(images)
-        except Exception as e:
-            logger.error(f"Error scanning images: {e}")
-            return []
 
     def toggle_auto_labeling_widget(self):
         """Toggle auto labeling widget visibility."""
@@ -6419,19 +3977,6 @@ class LabelingWidget(LabelDialog):
 
         # No label is found
         return ""
-
-    @staticmethod
-    def find_most_similar_label(text, valid_labels):
-        max_similarity = 0
-        most_similar_label = valid_labels[0]
-
-        for label in valid_labels:
-            similarity = SequenceMatcher(None, text, label).ratio()
-            if similarity > max_similarity:
-                max_similarity = similarity
-                most_similar_label = label
-
-        return most_similar_label
 
     def set_cache_auto_label(self):
         self.auto_labeling_widget.on_cache_auto_label_changed(
@@ -6560,6 +4105,16 @@ class LabelingWidget(LabelDialog):
         if updated_shapes:
             self.set_dirty()
 
+    def shape_text_changed(self):
+        description = self.shape_text_edit.toPlainText()
+        if self.canvas.current is not None:
+            self.canvas.current.description = description
+        elif self.canvas.editing() and len(self.canvas.selected_shapes) == 1:
+            self.canvas.selected_shapes[0].description = description
+        else:
+            self.other_data["description"] = description
+        self.set_dirty()
+
     def set_text_editing(self, enable):
         """Set text editing."""
         if enable:
@@ -6595,3 +4150,13 @@ class LabelingWidget(LabelDialog):
         font.setPointSize(10)
         self.shape_text_edit.setFont(font)
         self.shape_text_label.setFont(font)
+
+    def group_selected_shapes(self):
+        self.canvas.group_selected_shapes()
+        self.set_dirty()
+        self.load_file(self.filename)
+
+    def ungroup_selected_shapes(self):
+        self.canvas.ungroup_selected_shapes()
+        self.set_dirty()
+        self.load_file(self.filename)

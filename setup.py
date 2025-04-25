@@ -43,7 +43,6 @@ def get_package_name():
 def get_install_requires():
     """Get python requirements based on context"""
     install_requires = [
-        "imgviz>=0.11",
         "natsort>=7.1.0",
         "numpy<=1.26.4",
         "Pillow>=2.8",
@@ -94,7 +93,7 @@ setup(
     long_description_content_type="text/markdown",
     author="CVHub",
     author_email="cvhub.cn@gmail.com",
-    python_requires=">=3.8.0",
+    python_requires=">=3.10.0",
     url="https://github.com/CVHub520/X-AnyLabeling",
     install_requires=get_install_requires(),
     license="GPLv3",

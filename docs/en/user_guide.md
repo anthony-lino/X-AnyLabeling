@@ -15,7 +15,7 @@
    * [3. View](#3-view)
       * [3.1 Canvas Visualization](#31-canvas-visualization)
       * [3.2 Image Visualization](#32-image-visualization)
-      * [3.3 Object Visualization](#33-object-visualization)
+      * [3.3 Shape Visualization](#33-shape-visualization)
       * [3.4 Crosshair](#34-crosshair)
    * [4. Annotation Import and Export](#4-annotation-import-and-export)
       * [4.1 YOLO Annotation](#41-yolo-annotation)
@@ -26,6 +26,7 @@
       * [4.6 MOT Annotation](#46-mot-annotation)
       * [4.7 PPOCR Annotation](#47-ppocr-annotation)
       * [4.8 ODVG Annotation](#48-odvg-annotation)
+      * [4.9 VLM-R1-OVD Annotation](#49-vlm-r1-ovd-annotation)
   * [5. Toolbar](#5-toolbar)
       * [5.1 Data Statistics](#51-data-statistics)
       * [5.2 Save Sub-Images](#52-save-sub-images)
@@ -42,6 +43,7 @@
       * [7.4 Auto-Switch to Edit Mode](#74-auto-switch-to-edit-mode)
       * [7.5 Hover Auto-Highlight Mode](#75-hover-auto-highlight-mode)
       * [7.6 Shape Property Customization](#76-shape-property-customization)
+      * [7.7 Configuring Model Download Sources](#77-configuring-model-download-sources)
   * [8. Tasks](#8-tasks)
       * [8.1 Image Classification](#81-image-classification)
       * [8.2 Object Detection](#82-object-detection)
@@ -53,6 +55,7 @@
       * [8.8 Interactive Video Object Segmentation](#88-interactive-video-object-segmentation)
       * [8.9 Matting](#89-matting)
       * [8.10 Vision-Language](#810-vision-language)
+      * [8.11 Zero-shot Counting by Detection and Segmentation](#811-zero-shot-counting-by-detection-and-segmentation)
    * [9. Models](#9-models)
 
 
@@ -249,11 +252,19 @@ X-AnyLabeling supports color adjustment for the current image. Operations includ
 
 Additionally, as the cursor moves, the information bar at the bottom of the GUI displays the current image's filename and annotation progress in real time.
 
-### 3.3 Object Visualization
+### 3.3 Shape Visualization
 
-Object visualization features include displaying text descriptions (Ctrl+T), label names (Ctrl+L), group IDs, rotation angles, and prediction scores of annotated objects in the current image. Users can set these through shortcuts or the corresponding options in the `View` dropdown menu at the top of the interface.
+Shape visualization features display text descriptions of labeled shapes (Ctrl+T), label names (Ctrl+L), group IDs, rotation angles, prediction scores, and more.
 
-Furthermore, when the cursor hovers over an object of interest, the information bar at the bottom of the GUI displays the current object's width, height, and other details.
+Configure these display options using the indicated keyboard shortcuts or by selecting them in the `View` dropdown menu at the top.
+
+Hovering your cursor over a shape will dynamically display its width and height in the GUI's bottom information bar.
+
+<p align="center">
+  <img src="../../assets/resources/filter.png" alt="Brightness-Contrast">
+</p>
+
+The right-middle panel of the GUI provides `Label Filters` and `Group ID Filters` for easily displaying shapes with specific labels or group IDs
 
 ### 3.4 Crosshair
 
@@ -316,7 +327,10 @@ The export path defaults to the `Annotations` folder in the same directory as th
 
 The latest version of X-AnyLabeling supports one-click import/export for COCO label files (*.json) related to object detection, instance segmentation, and keypoint detection tasks.
 
-Before importing or exporting COCO label files, ensure you have a label configuration file prepared. For object detection and instance segmentation tasks, refer to [classes.txt](../../assets/classes.txt), and for keypoint detection tasks, refer to [yolov8_pose.yaml](../../assets/yolov8_pose.yaml).
+Before importing or exporting COCO format labels, ensure you have the correct configuration file:
+*   For Object Detection tasks (rectangle format), use [`classes.txt`](../../assets/classes.txt).
+*   For Instance Segmentation tasks (polygon format), also use [`classes.txt`](../../assets/classes.txt), but ensure it includes `_background_` as the first class for export. `__ignore__` can optionally be added as well.
+*   For Keypoint Detection tasks (pose format), use [`yolov8_pose.yaml`](../../assets/yolov8_pose.yaml).
 
 **Import Task**:
 1. Click the `Upload` button in the top menu bar.
@@ -332,7 +346,7 @@ Before importing or exporting COCO label files, ensure you have a label configur
 
 The export path defaults to the `annotations` folder in the same directory as the current image directory.
 
-> For a sample COCO label file, refer to [instances_default.json](../../assets/annotations/instances_default.json).
+> For a sample COCO label file, refer to [annotations](../../assets/annotations) directory.
 
 ### 4.4 DOTA Annotation
 
@@ -488,6 +502,24 @@ Before importing/exporting ODVG label files, you need to prepare a label configu
 4. Choose the save path and click OK.
 
 > For the style of ODVG label files, refer to [ODVG](../../assets/ODVG).
+
+### 4.9 VLM-R1-OVD Annotation
+
+The latest version of X-AnyLabeling supports one-click import/export for VLM-R1-OVD label files.
+
+**Import Task**:
+1. Click the `Upload` button in the top menu bar.
+2. Select the corresponding task.
+3. Choose the directory where the label files are located and click OK.
+
+**Export Task**:
+1. Click the `Export` button in the top menu bar.
+2. Select the corresponding task.
+3. Fill in the corresponding configuration items and click OK.
+
+Note: The [classes.txt](../../assets/classes.txt) file is used to specify the categories or phrases to be exported. If not specified, the default is to detect all categories or phrases in each image as prompt categories for export, and automatically skip empty files without labels.
+
+> For the style of VLM-R1-OVD label files, refer to [vlm_r1_ovd.jsonl](../../assets/vlm_r1_ovd.jsonl).
 
 
 ### 5. Toolbar
@@ -735,6 +767,31 @@ shape:
 ...
 ```
 
+### 7.7 Configuring Model Download Sources
+
+X-AnyLabeling can download pre-trained models from different model hubs. You can specify your preferred download source using an environment variable, by editing the `.xanylabelingrc` configuration file, or based on the software's language setting. The sources are prioritized as follows:
+
+1.  **Environment Variable (Highest Priority)**: Set the `XANYLABELING_MODEL_HUB` environment variable.
+    *   Example (Linux/macOS): `export XANYLABELING_MODEL_HUB=modelscope`
+    *   Example (Windows): `set XANYLABELING_MODEL_HUB=modelscope`
+    *   If this variable is set to `modelscope`, X-AnyLabeling will exclusively use ModelScope, overriding any setting in the configuration file. If it's set to any other value or left empty, the configuration file setting will be considered next.
+
+2.  **Configuration File (Medium Priority)**: Modify the `.xanylabelingrc` file located in your user directory.
+    *   Locate the `model_hub` field within the file.
+    *   Possible values are `github` (the default) or `modelscope`.
+    *   This setting takes effect only if the `XANYLABELING_MODEL_HUB` environment variable is not set or is empty. Setting `model_hub: modelscope` here will prioritize downloading models from ModelScope.
+
+    ```yaml
+    language: en_US
+    model_hub: github  # Options: github, modelscope
+    ...
+    ```
+
+3.  **Language Setting (Lowest Priority)**:
+    *   If neither the environment variable nor the configuration file explicitly specifies `modelscope` (meaning they are unset, empty, or set to `github`), *and* the software language is set to Chinese (`language: zh_CN`), X-AnyLabeling will attempt to download models from ModelScope by default.
+    *   In all other scenarios (e.g., the language is set to English and `modelscope` hasn't been specified via the environment variable or config file), the default GitHub URL will be used for downloads.
+
+
 ## 8. Tasks
 
 ### 8.1 Image Classification
@@ -779,6 +836,10 @@ shape:
 ### 8.10 Vision-Language
 
 - Florence 2: [Link](../../examples/vision_language/florence2/README.md)
+
+### 8.11 Zero-shot Counting by Detection and Segmentation
+
+- GeCo: [Link](../../examples/counting/geco/README.md)
 
 ## 9. Models
 
